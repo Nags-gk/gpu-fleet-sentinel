@@ -1,0 +1,5 @@
+bin/
+.git/
+docs/
+*.md
+cover.out

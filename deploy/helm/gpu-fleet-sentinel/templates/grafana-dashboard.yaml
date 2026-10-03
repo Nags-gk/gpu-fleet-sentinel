@@ -1,0 +1,12 @@
+{{- if .Values.grafanaDashboard.enabled }}
+# Picked up by the Grafana dashboard sidecar (kube-prometheus-stack).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-dashboard
+  labels: {{- include "sentinel.labels" . | nindent 4 }}
+    grafana_dashboard: "1"
+data:
+  gpu-fleet-sentinel.json: |-
+{{ .Files.Get "files/grafana-dashboard.json" | indent 4 }}
+{{- end }}

@@ -1,0 +1,29 @@
+groups:
+  - name: gpu-fleet-sentinel
+    rules:
+      - alert: GPUNodeQuarantined
+        expr: sentinel_quarantined_nodes > 0
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $value }} GPU node(s) quarantined"
+          runbook_url: https://github.com/Nags-gk/gpu-fleet-sentinel/blob/main/docs/RUNBOOK.md#gpunodequarantined
+      - alert: GPURemediationBudgetExhausted
+        expr: increase(sentinel_remediation_decisions_total{action="Defer"}[10m]) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: Unhealthy GPU nodes are waiting because the disruption budget is used up
+          runbook_url: https://github.com/Nags-gk/gpu-fleet-sentinel/blob/main/docs/RUNBOOK.md#gpuremediationbudgetexhausted
+      - alert: GPUEvictionsBlockedByPDB
+        expr: increase(sentinel_evictions_total{result="blocked_by_pdb"}[15m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: Draining a quarantined GPU node is blocked by a PodDisruptionBudget
+          runbook_url: https://github.com/Nags-gk/gpu-fleet-sentinel/blob/main/docs/RUNBOOK.md#gpuevictionsblockedbypdb
+      - alert: GPUTelemetryUnavailable
+        expr: rate(sentinel_sample_errors_total[5m]) > 0
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "GPU agent on {{ $labels.pod }} cannot read telemetry"
+          runbook_url: https://github.com/Nags-gk/gpu-fleet-sentinel/blob/main/docs/RUNBOOK.md#gputelemetryunavailable

@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ .Release.Name }}-agent
+  labels: {{- include "sentinel.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+spec:
+  selector:
+    matchLabels: {app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: agent}
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate: {maxUnavailable: 10%}
+  template:
+    metadata:
+      labels: {{- include "sentinel.labels" . | nindent 8 }}
+        app.kubernetes.io/component: agent
+    spec:
+      serviceAccountName: {{ .Release.Name }}-agent
+      priorityClassName: system-node-critical
+      nodeSelector:
+        {{ .Values.nodeSelectorLabel.key }}: {{ .Values.nodeSelectorLabel.value | quote }}
+      tolerations: {{- toYaml .Values.agent.tolerations | nindent 8 }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: agent
+          image: {{ include "sentinel.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [/usr/local/bin/agent]
+          args:
+            - --source={{ .Values.agent.source }}
+            - --dcgm-url={{ .Values.agent.dcgmURL }}
+            - --interval={{ .Values.agent.interval }}
+            - --fail-after={{ .Values.agent.failAfter }}
+            - --recover-after={{ .Values.agent.recoverAfter }}
+            - --expected-gpus={{ .Values.agent.expectedGPUs }}
+            - --temp-warn={{ .Values.agent.tempWarn }}
+            - --temp-critical={{ .Values.agent.tempCritical }}
+            - --sim-gpus={{ .Values.agent.sim.gpus }}
+            - --sim-model={{ .Values.agent.sim.model }}
+            - --listen=:{{ .Values.agent.port }}
+          env:
+            - name: NODE_NAME
+              valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
+            - name: HOST_IP
+              valueFrom: {fieldRef: {fieldPath: status.hostIP}}
+          ports:
+            - {name: http, containerPort: {{ .Values.agent.port }}}
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 20
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+          resources: {{- toYaml .Values.agent.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}

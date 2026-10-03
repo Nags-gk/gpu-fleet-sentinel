@@ -1,0 +1,46 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-controller-metrics
+  labels: {{- include "sentinel.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  selector: {app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: controller}
+  ports:
+    - {name: metrics, port: 8080, targetPort: metrics}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-agent-metrics
+  labels: {{- include "sentinel.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+spec:
+  clusterIP: None
+  selector: {app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: agent}
+  ports:
+    - {name: http, port: {{ .Values.agent.port }}, targetPort: http}
+{{- if .Values.serviceMonitor.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ .Release.Name }}
+  labels: {{- include "sentinel.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels: {app.kubernetes.io/instance: {{ .Release.Name }}}
+  endpoints:
+    - {port: metrics, interval: {{ .Values.serviceMonitor.interval }}}
+    - {port: http, path: /metrics, interval: {{ .Values.serviceMonitor.interval }}}
+{{- end }}
+{{- if .Values.prometheusRule.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ .Release.Name }}
+  labels: {{- include "sentinel.labels" . | nindent 4 }}
+spec:
+{{ .Files.Get "files/alerts.yaml" | indent 2 }}
+{{- end }}

@@ -1,0 +1,8 @@
+apiVersion: v2
+name: gpu-fleet-sentinel
+description: Detects unhealthy GPUs and safely quarantines Kubernetes GPU nodes.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords: [gpu, nvidia, dcgm, kubernetes, reliability, controller]
+home: https://github.com/Nags-gk/gpu-fleet-sentinel

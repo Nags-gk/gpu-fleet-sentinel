@@ -1,0 +1,14 @@
+# helm install mon prometheus-community/kube-prometheus-stack -n monitoring --create-namespace \
+#   -f deploy/observability/kube-prometheus-values.yaml
+# Lets Prometheus pick up ServiceMonitors/PrometheusRules from every namespace.
+prometheus:
+  prometheusSpec:
+    serviceMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    scrapeInterval: 10s
+grafana:
+  adminPassword: sentinel   # local demo only
+  sidecar:
+    dashboards: {enabled: true, searchNamespace: ALL}
+alertmanager:
+  enabled: true

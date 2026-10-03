@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-controller
+  labels: {{- include "sentinel.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  replicas: {{ .Values.controller.replicas }}
+  selector:
+    matchLabels: {app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: controller}
+  template:
+    metadata:
+      labels: {{- include "sentinel.labels" . | nindent 8 }}
+        app.kubernetes.io/component: controller
+    spec:
+      serviceAccountName: {{ .Release.Name }}-controller
+      # Never schedule the controller onto the GPU nodes it may quarantine.
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - {key: {{ .Values.nodeSelectorLabel.key }}, operator: NotIn, values: [{{ .Values.nodeSelectorLabel.value | quote }}]}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: controller
+          image: {{ include "sentinel.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [/usr/local/bin/controller]
+          args:
+            - --leader-elect=true
+            - --node-selector={{ include "sentinel.selector" . }}
+            - --grace-period={{ .Values.controller.gracePeriod }}
+            - --recovery-period={{ .Values.controller.recoveryPeriod }}
+            - --stale-after={{ .Values.controller.staleAfter }}
+            - --max-unavailable={{ .Values.controller.maxUnavailable }}
+            - --max-unavailable-percent={{ .Values.controller.maxUnavailablePercent }}
+            - --drain-scope={{ .Values.controller.drainScope }}
+            - --dry-run={{ .Values.controller.dryRun }}
+            {{- with .Values.controller.llm }}
+            {{- if .baseURL }}
+            - --llm-base-url={{ .baseURL }}
+            - --llm-model={{ .model }}
+            {{- if .azureDeployment }}
+            - --azure-openai-deployment={{ .azureDeployment }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+          {{- if .Values.controller.llm.apiKeySecret }}
+          envFrom:
+            - secretRef: {name: {{ .Values.controller.llm.apiKeySecret }}}
+          {{- end }}
+          ports:
+            - {name: metrics, containerPort: 8080}
+            - {name: probes, containerPort: 8081}
+          livenessProbe:
+            httpGet: {path: /healthz, port: probes}
+          readinessProbe:
+            httpGet: {path: /readyz, port: probes}
+          resources: {{- toYaml .Values.controller.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}

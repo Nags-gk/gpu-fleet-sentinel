@@ -1,0 +1,19 @@
+# Fast timers so the whole fault → quarantine → recovery loop runs in about a minute.
+image:
+  pullPolicy: IfNotPresent
+
+agent:
+  source: sim
+  interval: 2s
+  failAfter: 2
+  recoverAfter: 2
+  sim:
+    gpus: 8
+
+controller:
+  replicas: 2            # leader election picks one
+  gracePeriod: 10s
+  recoveryPeriod: 20s
+  staleAfter: 60s
+  maxUnavailable: 1
+  maxUnavailablePercent: 0

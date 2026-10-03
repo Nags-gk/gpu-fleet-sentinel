@@ -1,0 +1,14 @@
+# A 1 control-plane + 4 worker cluster where every worker pretends to be a GPU
+# node. The agent runs in --source=sim mode, so no NVIDIA hardware is needed.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+  - role: worker
+    labels: {nvidia.com/gpu.present: "true", nvidia.com/gpu.product: NVIDIA-H100-80GB-HBM3}
+  - role: worker
+    labels: {nvidia.com/gpu.present: "true", nvidia.com/gpu.product: NVIDIA-H100-80GB-HBM3}
+  - role: worker
+    labels: {nvidia.com/gpu.present: "true", nvidia.com/gpu.product: NVIDIA-H100-80GB-HBM3}
+  - role: worker
+    labels: {nvidia.com/gpu.present: "true", nvidia.com/gpu.product: NVIDIA-H100-80GB-HBM3}

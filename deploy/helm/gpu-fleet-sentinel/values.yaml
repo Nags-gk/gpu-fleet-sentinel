@@ -1,0 +1,63 @@
+image:
+  repository: ghcr.io/nags-gk/gpu-fleet-sentinel
+  tag: ""                 # defaults to the chart appVersion
+  pullPolicy: IfNotPresent
+
+# Label selector for GPU nodes (set by NVIDIA GPU Feature Discovery).
+nodeSelectorLabel:
+  key: nvidia.com/gpu.present
+  value: "true"
+
+agent:
+  # dcgm: scrape NVIDIA dcgm-exporter on the node. sim: simulated GPUs (laptops/CI).
+  source: dcgm
+  # HOST_IP is injected from the downward API. dcgm-exporter must be reachable on
+  # the node IP (hostPort/hostNetwork), or override this with its Service/pod URL.
+  dcgmURL: "http://$(HOST_IP):9400/metrics"
+  interval: 15s
+  failAfter: 2
+  recoverAfter: 4
+  expectedGPUs: 0
+  tempWarn: 83
+  tempCritical: 90
+  sim:
+    gpus: 8
+    model: NVIDIA H100 80GB HBM3
+  port: 9500
+  resources:
+    requests: {cpu: 10m, memory: 32Mi}
+    limits: {memory: 64Mi}
+  # The agent must keep running on quarantined nodes so it can report recovery.
+  tolerations:
+    - operator: Exists
+
+controller:
+  replicas: 1
+  gracePeriod: 2m
+  recoveryPeriod: 10m
+  staleAfter: 5m
+  maxUnavailable: 1
+  maxUnavailablePercent: 10
+  drainScope: gpu        # gpu | all
+  dryRun: false
+  llm:
+    # OpenAI-compatible endpoint for incident summaries. Empty = built-in template.
+    # Ollama: http://ollama.ollama:11434/v1   Azure OpenAI: https://<resource>.openai.azure.com
+    baseURL: ""
+    model: llama3.2
+    azureDeployment: ""
+    # Secret with key LLM_API_KEY (optional for Ollama).
+    apiKeySecret: ""
+  resources:
+    requests: {cpu: 20m, memory: 64Mi}
+    limits: {memory: 128Mi}
+
+serviceMonitor:
+  enabled: false         # requires the Prometheus Operator CRDs
+  interval: 15s
+
+prometheusRule:
+  enabled: false
+
+grafanaDashboard:
+  enabled: false         # set true with kube-prometheus-stack
