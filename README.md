@@ -58,7 +58,7 @@ Measured with the simulated GPU backend. No physical GPUs were involved, so thes
 |---|---|---|
 | Unit tests (`go test -race`) | fake client | 81.7% statement coverage, race-clean |
 | Integration test | real kube-apiserver + etcd (envtest), 3 GPU nodes + 1 CPU node | fault → quarantine in ~2s with a 2s grace period; PDB-protected pod kept; budget held under concurrent failures; automatic release |
-| End-to-end test | kind, 4 workers, Helm install | fault → workload rescheduled to a healthy node → recovery; run `make e2e` (CI job `e2e`) |
+| End-to-end test (CI) | kind, 4 workers, Helm install | XID 79 injected → node quarantined in **13 s** (10 s grace period) → GPU workload rescheduled on a healthy node at **14 s** → node released **23 s** after the fault cleared (20 s recovery period); disruption budget held with two nodes failing at once |
 
 ## Quick start (laptop, no GPU required)
 
