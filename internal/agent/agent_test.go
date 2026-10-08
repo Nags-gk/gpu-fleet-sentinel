@@ -181,3 +181,37 @@ func TestDebugHandlers(t *testing.T) {
 		}
 	}
 }
+
+// A restarted agent on a node that is already unhealthy must not flip the
+// condition back to True (which would reset the controller's grace timer).
+func TestRestartKeepsUnhealthyCondition(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	sim := health.NewSimSource("gpu-node-1", "H100", 4, 1)
+	_ = sim.Inject(0, health.FaultXID79)
+	a, c, _ := newAgent(t, sim, &now)
+
+	var node corev1.Node
+	if err := c.Get(ctx, types.NamespacedName{Name: "gpu-node-1"}, &node); err != nil {
+		t.Fatal(err)
+	}
+	since := metav1.NewTime(now.Add(-time.Minute))
+	node.Status.Conditions = append(node.Status.Conditions, corev1.NodeCondition{
+		Type: api.ConditionGPUHealthy, Status: corev1.ConditionFalse, Reason: api.ReasonFault,
+		LastTransitionTime: since,
+	})
+	if err := c.Status().Update(ctx, &node); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := a.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cond, _ := gpuCondition(t, c)
+	if cond.Status != corev1.ConditionFalse {
+		t.Fatalf("restart flipped condition to %v", cond.Status)
+	}
+	if !cond.LastTransitionTime.Equal(&since) {
+		t.Fatalf("transition time reset to %v, want %v", cond.LastTransitionTime, since)
+	}
+}

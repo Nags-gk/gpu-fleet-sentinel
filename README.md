@@ -1,6 +1,9 @@
 # GPU Fleet Sentinel
 
 [![ci](https://github.com/Nags-gk/gpu-fleet-sentinel/actions/workflows/ci.yaml/badge.svg)](https://github.com/Nags-gk/gpu-fleet-sentinel/actions/workflows/ci.yaml)
+[![release](https://img.shields.io/github/v/release/Nags-gk/gpu-fleet-sentinel?sort=semver)](https://github.com/Nags-gk/gpu-fleet-sentinel/releases)
+[![Go Report Card](https://goreportcard.com/badge/github.com/Nags-gk/gpu-fleet-sentinel)](https://goreportcard.com/report/github.com/Nags-gk/gpu-fleet-sentinel)
+[![license](https://img.shields.io/github/license/Nags-gk/gpu-fleet-sentinel)](LICENSE)
 
 **Automated GPU node health detection and safe remediation for Kubernetes.**
 A Go node agent reads NVIDIA DCGM telemetry, detects hardware faults (XID errors,
@@ -120,6 +123,14 @@ with exactly one request.
 
 **Pending pods bypass PDBs.** The Eviction API ignores PDBs for pods that are not
 running. The integration test sets pod phase explicitly to exercise the real path.
+
+**A critical XID keeps the node quarantined until the GPU is reset.** dcgm-exporter
+keeps reporting the last XID (and volatile ECC counters) until a GPU reset or reboot,
+so a node with a hardware fault is not released until someone repairs it. That is
+intentional. XID 63 (a *successful* row remap) is only a warning, because treating
+it as a fault would drain a node whose memory just repaired itself; XID 64 (remap
+failure) is critical. A restarted agent resumes from the condition already on the
+node rather than briefly reporting healthy and resetting the grace timer.
 
 **Condition timestamps have 1-second resolution**, so a grace period can fire up
 to ~1s early. That is irrelevant at the default 2-minute grace period, and is

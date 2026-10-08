@@ -79,6 +79,7 @@ type Agent struct {
 	Log       logr.Logger
 	Now       func() time.Time
 
+	seeded     bool
 	mu         sync.RWMutex
 	lastReport health.Report
 	lastErr    error
@@ -134,6 +135,9 @@ func (a *Agent) Tick(ctx context.Context) error {
 	}
 
 	report := a.Evaluator.Evaluate(health.Snapshot{Node: a.NodeName, Time: now, Samples: samples})
+	if !a.seeded {
+		a.seedDebouncer(ctx)
+	}
 	healthy := a.Debouncer.Observe(report.Status())
 
 	a.Metrics.Temperature.Reset()
@@ -161,6 +165,22 @@ func (a *Agent) Tick(ctx context.Context) error {
 		status, reason = corev1.ConditionFalse, api.ReasonFault
 	}
 	return a.publish(ctx, status, reason, report.Summary(), now)
+}
+
+// seedDebouncer resumes from the condition already on the node. Without it a
+// restarted agent on a faulty node would publish True until FailAfter samples
+// passed, resetting the transition time and the controller's grace period.
+func (a *Agent) seedDebouncer(ctx context.Context) {
+	var node corev1.Node
+	if err := a.Client.Get(ctx, types.NamespacedName{Name: a.NodeName}, &node); err != nil {
+		return // try again next tick
+	}
+	a.seeded = true
+	for _, c := range node.Status.Conditions {
+		if c.Type == api.ConditionGPUHealthy && c.Status == corev1.ConditionFalse {
+			a.Debouncer.Seed(false)
+		}
+	}
 }
 
 // publish writes the GPUHealthy condition with a strategic merge patch on the
