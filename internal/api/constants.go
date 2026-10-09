@@ -30,6 +30,21 @@ const (
 	// AnnotationIncidentSummary holds the incident summary written on quarantine.
 	AnnotationIncidentSummary = Domain + "/incident-summary"
 
+	// AnnotationRepairAttempts counts reboot attempts. Like AnnotationLastRepairAt
+	// it survives release, so a node that keeps failing cannot reboot forever;
+	// attempts older than the policy's history window stop counting.
+	AnnotationRepairAttempts = Domain + "/repair-attempts"
+	// AnnotationLastRepairAt is the time of the last reboot attempt (RFC3339).
+	AnnotationLastRepairAt = Domain + "/last-repair-at"
+	// AnnotationRebootRequested is set by the annotation actuator for external
+	// automation to act on; its value is "attempt-N@<RFC3339>".
+	AnnotationRebootRequested = Domain + "/reboot-requested"
+	// AnnotationReplacementRequested marks a node whose reboots are exhausted and
+	// that needs to be replaced (RFC3339). Cleared if the node recovers.
+	AnnotationReplacementRequested = Domain + "/replacement-requested"
+	// LabelRebootNode labels reboot pods created by the pod actuator.
+	LabelRebootNode = Domain + "/reboot-node"
+
 	// DefaultGPUNodeSelector matches nodes labeled by NVIDIA GPU Feature Discovery.
 	DefaultGPUNodeSelector = "nvidia.com/gpu.present=true"
 

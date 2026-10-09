@@ -58,7 +58,7 @@ func (r *PolicyStatusReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	orig := pol.DeepCopy()
-	pol.Status = computeStatus(&pol, rp, policies, nodes.Items)
+	pol.Status = computeStatus(&pol, rp, policies, nodes.Items, time.Now())
 	if !apiequality.Semantic.DeepEqual(orig.Status, pol.Status) {
 		// Update, not a merge patch: a patch omits zero-valued counts, which the
 		// CRD requires, so the first write of an idle policy would be rejected.
@@ -70,7 +70,7 @@ func (r *PolicyStatusReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	return ctrl.Result{RequeueAfter: 2 * time.Minute}, nil
 }
 
-func computeStatus(pol *v1alpha1.GPUNodePolicy, rp *ResolvedPolicy, all []ResolvedPolicy, nodes []corev1.Node) v1alpha1.GPUNodePolicyStatus {
+func computeStatus(pol *v1alpha1.GPUNodePolicy, rp *ResolvedPolicy, all []ResolvedPolicy, nodes []corev1.Node, now time.Time) v1alpha1.GPUNodePolicyStatus {
 	st := v1alpha1.GPUNodePolicyStatus{ObservedGeneration: pol.Generation, Conditions: pol.Status.Conditions}
 	var waiting int32
 	for i := range nodes {
@@ -88,6 +88,11 @@ func computeStatus(pol *v1alpha1.GPUNodePolicy, rp *ResolvedPolicy, all []Resolv
 			if !v.QuarantinedByUs {
 				waiting++
 			}
+		}
+		if rs := repairState(n); rs.ReplacementRequested {
+			st.ReplacementRequestedNodes++
+		} else if rp.Escalation != nil && rp.Escalation.InFlight(rs, now) {
+			st.RepairingNodes++
 		}
 		if v.QuarantinedByUs {
 			st.QuarantinedNodes++

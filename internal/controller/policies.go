@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/Nags-gk/gpu-fleet-sentinel/api/v1alpha1"
+	"github.com/Nags-gk/gpu-fleet-sentinel/internal/escalation"
 	"github.com/Nags-gk/gpu-fleet-sentinel/internal/remediation"
 )
 
@@ -37,6 +38,8 @@ type ResolvedPolicy struct {
 	Selector   labels.Selector // nil when the policy's selector could not be parsed
 	DrainScope DrainScope
 	DryRun     bool
+	// Escalation is nil when the policy does not repair nodes.
+	Escalation *escalation.Spec
 	// Err is set when the policy is invalid. Nodes it matches are left alone
 	// rather than handled with settings nobody asked for.
 	Err error
@@ -130,6 +133,31 @@ func fromSpec(p *v1alpha1.GPUNodePolicy, d Defaults) ResolvedPolicy {
 	}
 	if s.DryRun != nil {
 		rp.DryRun = *s.DryRun
+	}
+
+	if e := s.Escalation; e != nil {
+		spec := escalation.DefaultSpec()
+		spec.After = e.After.Duration
+		if e.Action != nil {
+			spec.Replace = *e.Action == v1alpha1.EscalateReplacement
+		}
+		if e.MaxAttempts != nil {
+			spec.MaxAttempts = int(*e.MaxAttempts)
+		}
+		if e.MaxConcurrent != nil {
+			spec.MaxConcurrent = int(*e.MaxConcurrent)
+		}
+		if e.Cooldown != nil {
+			spec.Cooldown = e.Cooldown.Duration
+		}
+		if e.HistoryWindow != nil {
+			spec.HistoryWindow = e.HistoryWindow.Duration
+		}
+		rp.Escalation = &spec
+		if spec.After <= 0 || spec.Cooldown <= 0 || spec.HistoryWindow <= 0 || spec.MaxAttempts < 1 || spec.MaxConcurrent < 1 {
+			rp.Err = fmt.Errorf("escalation: after, cooldown and historyWindow must be positive; maxAttempts and maxConcurrent at least 1")
+			return rp
+		}
 	}
 
 	sel, err := metav1.LabelSelectorAsSelector(&s.NodeSelector)
