@@ -36,3 +36,8 @@ const (
 	// GPUResource is the extended resource name exposed by the NVIDIA device plugin.
 	GPUResource = "nvidia.com/gpu"
 )
+
+// LeaseName is the Lease an agent renews as its liveness heartbeat. Keeping the
+// heartbeat out of the node object means a healthy, unchanged node costs one
+// tiny Lease write per interval instead of a Node status patch.
+func LeaseName(node string) string { return "gpu-sentinel-" + node }

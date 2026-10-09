@@ -1,0 +1,9 @@
+{{- range .Values.policies }}
+---
+apiVersion: gpu-sentinel.io/v1alpha1
+kind: GPUNodePolicy
+metadata:
+  name: {{ .name }}
+  labels: {{- include "sentinel.labels" $ | nindent 4 }}
+spec: {{- toYaml .spec | nindent 2 }}
+{{- end }}

@@ -15,6 +15,10 @@ agent:
   # the node IP (hostPort/hostNetwork), or override this with its Service/pod URL.
   dcgmURL: "http://$(HOST_IP):9400/metrics"
   interval: 15s
+  # Heartbeat through a small Lease and rewrite the node condition only when it
+  # changes (or every conditionResync). false = legacy: patch the node every interval.
+  leaseHeartbeat: true
+  conditionResync: 5m
   failAfter: 2
   recoverAfter: 4
   expectedGPUs: 0
@@ -51,6 +55,16 @@ controller:
   resources:
     requests: {cpu: 20m, memory: 64Mi}
     limits: {memory: 128Mi}
+
+# GPUNodePolicy objects to create (see deploy/examples/gpunodepolicy.yaml). The
+# CRD itself is installed from crds/ on first install; Helm does not upgrade it,
+# so apply deploy/helm/gpu-fleet-sentinel/crds/ by hand when upgrading the chart.
+policies: []
+#  - name: training
+#    spec:
+#      nodeSelector: {matchLabels: {pool: training}}
+#      gracePeriod: 1m
+#      maxUnavailable: 1
 
 serviceMonitor:
   enabled: false         # requires the Prometheus Operator CRDs

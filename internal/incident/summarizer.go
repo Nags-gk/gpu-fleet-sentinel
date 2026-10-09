@@ -13,6 +13,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/Nags-gk/gpu-fleet-sentinel/internal/textutil"
 )
 
 // Incident is what the controller knows when it quarantines a node.
@@ -144,7 +146,7 @@ func (c ChatCompletions) call(ctx context.Context, in Incident) (string, error) 
 	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("incident: llm HTTP %d: %s", resp.StatusCode, truncate(string(raw), 200))
+		return "", fmt.Errorf("incident: llm HTTP %d: %s", resp.StatusCode, textutil.Truncate(string(raw), 200))
 	}
 	var parsed struct {
 		Choices []struct {
@@ -159,12 +161,5 @@ func (c ChatCompletions) call(ctx context.Context, in Incident) (string, error) 
 	if len(parsed.Choices) == 0 || strings.TrimSpace(parsed.Choices[0].Message.Content) == "" {
 		return "", fmt.Errorf("incident: llm returned no content")
 	}
-	return truncate(strings.TrimSpace(parsed.Choices[0].Message.Content), 1000), nil
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n-3] + "..."
+	return textutil.Truncate(strings.TrimSpace(parsed.Choices[0].Message.Content), 1000), nil
 }

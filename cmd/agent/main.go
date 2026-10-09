@@ -39,6 +39,8 @@ func main() {
 		expectedGPUs = flag.Int("expected-gpus", 0, "GPUs the node must report (0 = don't check)")
 		tempWarn     = flag.Float64("temp-warn", 83, "warning temperature (C)")
 		tempCrit     = flag.Float64("temp-critical", 90, "critical temperature (C)")
+		leaseNS      = flag.String("lease-namespace", os.Getenv("POD_NAMESPACE"), "namespace for the heartbeat Lease (defaults to $POD_NAMESPACE); empty = legacy mode, patch the condition every interval")
+		resync       = flag.Duration("condition-resync", 5*time.Minute, "rewrite the node condition at least this often even if unchanged (Lease mode only)")
 		listen       = flag.String("listen", ":9500", "address for /metrics, /healthz and /debug endpoints")
 	)
 	opts := zap.Options{}
@@ -48,14 +50,14 @@ func main() {
 	log := ctrl.Log.WithName("agent")
 
 	if err := run(log, *nodeName, *source, *dcgmURL, *simGPUs, *simModel, *interval, *failAfter,
-		*recoverAfter, *expectedGPUs, *tempWarn, *tempCrit, *listen); err != nil {
+		*recoverAfter, *expectedGPUs, *tempWarn, *tempCrit, *listen, *leaseNS, *resync); err != nil {
 		log.Error(err, "agent exited")
 		os.Exit(1)
 	}
 }
 
 func run(log logr.Logger, nodeName, source, dcgmURL string, simGPUs int, simModel string, interval time.Duration,
-	failAfter, recoverAfter, expectedGPUs int, tempWarn, tempCrit float64, listen string) error {
+	failAfter, recoverAfter, expectedGPUs int, tempWarn, tempCrit float64, listen, leaseNS string, resync time.Duration) error {
 
 	if nodeName == "" {
 		return errors.New("--node-name or $NODE_NAME is required")
@@ -103,6 +105,9 @@ func run(log logr.Logger, nodeName, source, dcgmURL string, simGPUs int, simMode
 		Metrics:   agent.NewMetrics(reg),
 		Interval:  interval,
 		Log:       log,
+
+		LeaseNamespace:  leaseNS,
+		ConditionResync: resync,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
