@@ -16,6 +16,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with: {go-version-file: go.mod}
+      - name: generated code and CRD are up to date
+        run: make generate && git diff --exit-code -- api deploy/helm
       - name: gofmt
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - name: vet
@@ -44,6 +46,7 @@ jobs:
       - run: helm lint deploy/helm/gpu-fleet-sentinel
       - run: |
           helm template t deploy/helm/gpu-fleet-sentinel \
+            --set 'policies[0].name=p' --set 'policies[0].spec.nodeSelector.matchLabels.pool=a' \
             --set serviceMonitor.enabled=true --set prometheusRule.enabled=true \
             --set controller.llm.baseURL=http://ollama:11434/v1 > /dev/null
 

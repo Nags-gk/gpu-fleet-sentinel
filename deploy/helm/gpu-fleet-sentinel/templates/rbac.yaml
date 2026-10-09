@@ -77,6 +77,12 @@ rules:
   - apiGroups: ["", events.k8s.io]
     resources: [events]
     verbs: [create, patch]
+  - apiGroups: [gpu-sentinel.io]
+    resources: [gpunodepolicies]
+    verbs: [get, list, watch]
+  - apiGroups: [gpu-sentinel.io]
+    resources: [gpunodepolicies/status]
+    verbs: [get, update, patch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

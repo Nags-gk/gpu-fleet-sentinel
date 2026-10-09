@@ -56,6 +56,16 @@ controller:
     requests: {cpu: 20m, memory: 64Mi}
     limits: {memory: 128Mi}
 
+# GPUNodePolicy objects to create (see deploy/examples/gpunodepolicy.yaml). The
+# CRD itself is installed from crds/ on first install; Helm does not upgrade it,
+# so apply deploy/helm/gpu-fleet-sentinel/crds/ by hand when upgrading the chart.
+policies: []
+#  - name: training
+#    spec:
+#      nodeSelector: {matchLabels: {pool: training}}
+#      gracePeriod: 1m
+#      maxUnavailable: 1
+
 serviceMonitor:
   enabled: false         # requires the Prometheus Operator CRDs
   interval: 15s

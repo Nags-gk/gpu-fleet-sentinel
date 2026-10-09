@@ -44,6 +44,34 @@ flowchart LR
 | **Recover** | After the recovery period the controller removes only what it added. A node a human had already cordoned stays cordoned. |
 | **Observe** | Prometheus metrics, a Grafana dashboard, and alert rules with runbook links. |
 
+## Per-pool policy with `GPUNodePolicy`
+
+Controller flags (or Helm `controller.*`) set the fleet-wide default. For pools that
+need different behavior, create a cluster-scoped `GPUNodePolicy`; fields you leave out
+inherit the default:
+
+```yaml
+apiVersion: gpu-sentinel.io/v1alpha1
+kind: GPUNodePolicy
+metadata: {name: training-h100}
+spec:
+  nodeSelector: {matchLabels: {pool: training}}
+  gracePeriod: 1m
+  maxUnavailable: 1
+  dryRun: false
+```
+
+```console
+$ kubectl get gpunodepolicies
+NAME            MANAGED   UNHEALTHY   QUARANTINED   BUDGET   DRYRUN   READY   AGE
+training-h100   64        2           1             1        false    True    3d
+```
+
+- **Each policy has its own disruption budget.** A node counts toward the first matching policy (by name) and the flag default is last, so overlapping selectors cannot double-spend a budget.
+- **Unsafe specs are rejected at admission** by CEL rules in the CRD: an empty `nodeSelector` (it would match the control plane too), negative or malformed durations, percentages over 100. The controller re-validates, and a node under an invalid policy is left alone rather than handled with settings nobody asked for.
+- `status` reports managed / healthy / unhealthy / quarantined counts, the budget, and `Ready` and `BudgetExhausted` conditions. More examples: [deploy/examples](deploy/examples/gpunodepolicy.yaml).
+- Without the CRD installed the controller runs from flags exactly as before.
+
 ## Safety properties (each covered by tests)
 
 - **Disruption budget**: at most `max(maxUnavailable, maxUnavailablePercent × fleet)` nodes quarantined at once. Reconciles run with one worker so two nodes can't race for the last slot.

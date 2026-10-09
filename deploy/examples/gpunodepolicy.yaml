@@ -1,0 +1,23 @@
+# Two pools with different risk tolerance. Fields left out inherit the
+# controller's flag defaults (Helm: controller.* values).
+apiVersion: gpu-sentinel.io/v1alpha1
+kind: GPUNodePolicy
+metadata:
+  name: training-h100          # sorted first, so it wins if selectors overlap
+spec:
+  nodeSelector:
+    matchLabels: {pool: training}
+  gracePeriod: 1m
+  recoveryPeriod: 15m
+  maxUnavailable: 1            # a bad node stalls a whole training job: act fast, but one at a time
+  maxUnavailablePercent: 5
+---
+apiVersion: gpu-sentinel.io/v1alpha1
+kind: GPUNodePolicy
+metadata:
+  name: inference-canary
+spec:
+  nodeSelector:
+    matchLabels: {pool: inference}
+  dryRun: true                 # observe events and status before enforcing
+  drainScope: all

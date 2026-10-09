@@ -32,6 +32,13 @@ test-integration:
 scale:
 	KUBEBUILDER_ASSETS="$$(go run sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.20 use $(ENVTEST_K8S) --bin-dir $(ENVTEST_DIR) -p path)" hack/scale.sh
 
+CONTROLLER_GEN ?= go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.17.2
+
+# Regenerates deepcopy code and the CRD shipped in the Helm chart.
+generate:
+	$(CONTROLLER_GEN) object paths=./api/...
+	$(CONTROLLER_GEN) crd paths=./api/... output:crd:dir=deploy/helm/gpu-fleet-sentinel/crds
+
 cover:
 	go test -race -coverprofile=cover.out ./... && go tool cover -func=cover.out | tail -1
 

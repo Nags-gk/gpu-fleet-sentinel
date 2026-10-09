@@ -287,12 +287,12 @@ func TestShouldEvict(t *testing.T) {
 		pod("ds", "n", 1, "DaemonSet"): false, done: false, mirror: false, init: true,
 	}
 	for p, want := range cases {
-		if got := r.shouldEvict(p); got != want {
+		if got := r.shouldEvict(p, r.DrainScope); got != want {
 			t.Errorf("%s: shouldEvict = %v, want %v", p.Name, got, want)
 		}
 	}
 	r.DrainScope = DrainAllPods
-	if !r.shouldEvict(pod("cpu", "n", 0, "Job")) {
+	if !r.shouldEvict(pod("cpu", "n", 0, "Job"), r.DrainScope) {
 		t.Error("drain scope 'all' should evict CPU pods")
 	}
 }

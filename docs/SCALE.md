@@ -47,3 +47,7 @@ Fault scenario: 150 nodes hit XID 79 at once, then cleared.
 - Simulated GPUs: this validates the control loop and API load, not DCGM behavior.
 - CPU columns in the raw JSON read ≈0 because `ps` cputime has coarse resolution over a 2-minute window on an idle laptop; they are not evidence of cost either way.
 - Each reconcile lists the managed nodes from the informer cache to compute the budget, which is O(N) per reconcile. It is cheap at 1,000 nodes; at tens of thousands, shard the controller or keep a running counter.
+
+## Re-run after adding `GPUNodePolicy`
+
+Policy resolution lists every node (not just the label-selected ones) on each reconcile. Re-running the lease scenario at 1,000 nodes gave the same outcome (100 quarantined / 50 deferred, budget held, 100 pods evicted, all released in 50 s) with a reconcile mean of 3.9 ms (was 3.2 ms) and condition-`False`-to-cordon p95 of 11.1 s (was 10.7 s). The cost is O(nodes x policies) per reconcile, still negligible here.

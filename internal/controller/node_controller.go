@@ -20,10 +20,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	v1alpha1 "github.com/Nags-gk/gpu-fleet-sentinel/api/v1alpha1"
 	"github.com/Nags-gk/gpu-fleet-sentinel/internal/api"
 	"github.com/Nags-gk/gpu-fleet-sentinel/internal/incident"
 	"github.com/Nags-gk/gpu-fleet-sentinel/internal/remediation"
@@ -77,6 +80,10 @@ type NodeReconciler struct {
 	Summarizer incident.Summarizer
 	// Evictor sends evictions; nil falls back to the controller-runtime client.
 	Evictor Evictor
+	// UsePolicyCRD enables GPUNodePolicy objects. Selector, Policy, DrainScope
+	// and DryRun above act as the lowest-precedence default policy and as the
+	// values a GPUNodePolicy inherits for fields it leaves unset.
+	UsePolicyCRD bool
 	// LeaseNamespace is where agents renew their heartbeat Leases. Empty
 	// disables Lease lookups and relies on the condition heartbeat alone.
 	LeaseNamespace string
@@ -86,6 +93,7 @@ type NodeReconciler struct {
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods/eviction,verbs=create
+// +kubebuilder:rbac:groups=gpu-sentinel.io,resources=gpunodepolicies,verbs=get;list;watch
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
@@ -98,14 +106,25 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if err := r.Get(ctx, req.NamespacedName, &node); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if !r.Selector.Matches(labels.Set(node.Labels)) {
-		return ctrl.Result{}, nil
-	}
-
-	fleet, err := r.fleetView(ctx)
+	policies, err := r.Resolver().List(ctx)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	rp := Resolve(policies, &node)
+	if rp == nil {
+		return ctrl.Result{}, nil
+	}
+	if rp.Err != nil {
+		r.Recorder.Eventf(&node, corev1.EventTypeWarning, "InvalidPolicy",
+			"GPUNodePolicy %s is invalid, taking no action: %v", rp.Name, rp.Err)
+		return ctrl.Result{}, nil
+	}
+
+	fleets, err := r.fleets(ctx, policies)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	fleet := fleets[rp.Name]
 	view := nodeView(&node)
 	hb, err := r.leaseHeartbeat(ctx, node.Name)
 	if err != nil {
@@ -114,9 +133,9 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if hb.After(view.Heartbeat) {
 		view.Heartbeat = hb
 	}
-	d := r.Policy.Decide(view, fleet, now)
+	d := rp.Policy.Decide(view, fleet, now)
 	decisionsTotal.WithLabelValues(string(d.Action)).Inc()
-	logger.V(1).Info("decision", "action", d.Action, "reason", d.Reason, "health", view.Health)
+	logger.V(1).Info("decision", "policy", rp.Name, "action", d.Action, "reason", d.Reason, "health", view.Health)
 
 	switch d.Action {
 	case remediation.ActionWait:
@@ -127,14 +146,14 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{RequeueAfter: d.RequeueAfter}, nil
 
 	case remediation.ActionQuarantine:
-		if r.DryRun {
+		if rp.DryRun {
 			r.Recorder.Event(&node, corev1.EventTypeNormal, "DryRunQuarantine", conditionMessage(&node))
 			return ctrl.Result{}, nil
 		}
-		return r.quarantine(ctx, &node, view)
+		return r.quarantine(ctx, &node, view, rp.DrainScope)
 
 	case remediation.ActionRelease:
-		if r.DryRun {
+		if rp.DryRun {
 			r.Recorder.Event(&node, corev1.EventTypeNormal, "DryRunRelease", d.Reason)
 			return ctrl.Result{}, nil
 		}
@@ -150,20 +169,30 @@ func (r *NodeReconciler) now() time.Time {
 	return time.Now()
 }
 
-func (r *NodeReconciler) fleetView(ctx context.Context) (remediation.FleetView, error) {
+// Resolver returns the policy resolver for this reconciler.
+func (r *NodeReconciler) Resolver() Resolver {
+	return Resolver{
+		Reader: r.Client, UseCRD: r.UsePolicyCRD,
+		Defaults: Defaults{Policy: r.Policy, Selector: r.Selector, DrainScope: r.DrainScope, DryRun: r.DryRun},
+	}
+}
+
+// fleets counts every policy's nodes in one pass over the node cache and
+// refreshes the fleet-wide gauges.
+func (r *NodeReconciler) fleets(ctx context.Context, policies []ResolvedPolicy) (map[string]remediation.FleetView, error) {
 	var nodes corev1.NodeList
-	if err := r.List(ctx, &nodes, client.MatchingLabelsSelector{Selector: r.Selector}); err != nil {
-		return remediation.FleetView{}, fmt.Errorf("list GPU nodes: %w", err)
+	if err := r.List(ctx, &nodes); err != nil {
+		return nil, fmt.Errorf("list nodes: %w", err)
 	}
-	f := remediation.FleetView{Total: len(nodes.Items)}
-	for i := range nodes.Items {
-		if isQuarantinedByUs(&nodes.Items[i]) {
-			f.Quarantined++
-		}
+	fleets := Fleets(policies, nodes.Items)
+	var total, quarantined int
+	for _, f := range fleets {
+		total += f.Total
+		quarantined += f.Quarantined
 	}
-	managedNodes.Set(float64(f.Total))
-	quarantinedNodes.Set(float64(f.Quarantined))
-	return f, nil
+	managedNodes.Set(float64(total))
+	quarantinedNodes.Set(float64(quarantined))
+	return fleets, nil
 }
 
 // leaseHeartbeat returns the agent's last Lease renewal, or the zero time if
@@ -224,7 +253,7 @@ func isQuarantinedByUs(n *corev1.Node) bool {
 
 // quarantine cordons, taints and drains the node. Every step is idempotent,
 // so the controller can crash at any point and safely redo the work.
-func (r *NodeReconciler) quarantine(ctx context.Context, node *corev1.Node, view remediation.NodeView) (ctrl.Result, error) {
+func (r *NodeReconciler) quarantine(ctx context.Context, node *corev1.Node, view remediation.NodeView, scope DrainScope) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithValues("node", node.Name)
 	firstTime := !view.QuarantinedByUs
 
@@ -258,7 +287,7 @@ func (r *NodeReconciler) quarantine(ctx context.Context, node *corev1.Node, view
 		r.Recorder.Event(node, corev1.EventTypeWarning, "Quarantined", "GPU unhealthy: "+conditionMessage(node))
 	}
 
-	evicted, blocked, err := r.drain(ctx, node)
+	evicted, blocked, err := r.drain(ctx, node, scope)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -278,14 +307,14 @@ func (r *NodeReconciler) quarantine(ctx context.Context, node *corev1.Node, view
 }
 
 // drain evicts pods through the Eviction API so PodDisruptionBudgets are honored.
-func (r *NodeReconciler) drain(ctx context.Context, node *corev1.Node) (evicted, blocked int, err error) {
+func (r *NodeReconciler) drain(ctx context.Context, node *corev1.Node, scope DrainScope) (evicted, blocked int, err error) {
 	var pods corev1.PodList
 	if err := r.List(ctx, &pods, client.MatchingFields{PodNodeNameIndex: node.Name}); err != nil {
 		return 0, 0, fmt.Errorf("list pods on %s: %w", node.Name, err)
 	}
 	for i := range pods.Items {
 		p := &pods.Items[i]
-		if !r.shouldEvict(p) {
+		if !r.shouldEvict(p, scope) {
 			continue
 		}
 		switch err := r.evictor().Evict(ctx, p); {
@@ -310,7 +339,7 @@ func (r *NodeReconciler) evictor() Evictor {
 	return clientEvictor{c: r.Client}
 }
 
-func (r *NodeReconciler) shouldEvict(p *corev1.Pod) bool {
+func (r *NodeReconciler) shouldEvict(p *corev1.Pod, scope DrainScope) bool {
 	if p.DeletionTimestamp != nil || p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed {
 		return false
 	}
@@ -322,7 +351,7 @@ func (r *NodeReconciler) shouldEvict(p *corev1.Pod) bool {
 			return false // DaemonSet pods (incl. this agent) are recreated on the node anyway
 		}
 	}
-	if r.DrainScope == DrainAllPods {
+	if scope == DrainAllPods {
 		return true
 	}
 	return requestsGPU(p)
@@ -414,14 +443,28 @@ func (r *NodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		func(o client.Object) []string { return []string{o.(*corev1.Pod).Spec.NodeName} }); err != nil {
 		return err
 	}
-	selectorPred := predicate.NewPredicateFuncs(func(o client.Object) bool {
-		return r.Selector.Matches(labels.Set(o.GetLabels()))
-	})
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		Named("gpu-node-remediation").
-		For(&corev1.Node{}, builder.WithPredicates(selectorPred, gpuStateChanged())).
-		WithOptions(controller.Options{MaxConcurrentReconciles: 1}).
-		Complete(r)
+		// Which nodes are managed depends on the policies, so Reconcile decides;
+		// gpuStateChanged keeps unrelated node updates out.
+		For(&corev1.Node{}, builder.WithPredicates(gpuStateChanged())).
+		WithOptions(controller.Options{MaxConcurrentReconciles: 1})
+	if r.UsePolicyCRD {
+		// A policy edit can change what every node should do.
+		b = b.Watches(&v1alpha1.GPUNodePolicy{}, handler.EnqueueRequestsFromMapFunc(
+			func(ctx context.Context, _ client.Object) []reconcile.Request {
+				var nodes corev1.NodeList
+				if err := r.List(ctx, &nodes); err != nil {
+					return nil
+				}
+				reqs := make([]reconcile.Request, 0, len(nodes.Items))
+				for i := range nodes.Items {
+					reqs = append(reqs, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&nodes.Items[i])})
+				}
+				return reqs
+			}))
+	}
+	return b.Complete(r)
 }
 
 // gpuStateChanged skips the constant stream of heartbeat-only node updates;

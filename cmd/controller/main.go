@@ -9,7 +9,10 @@ import (
 
 	coordinationv1 "k8s.io/api/coordination/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/kubernetes"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -17,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	v1alpha1 "github.com/Nags-gk/gpu-fleet-sentinel/api/v1alpha1"
 	"github.com/Nags-gk/gpu-fleet-sentinel/internal/api"
 	"github.com/Nags-gk/gpu-fleet-sentinel/internal/controller"
 	"github.com/Nags-gk/gpu-fleet-sentinel/internal/incident"
@@ -40,6 +44,7 @@ func main() {
 		llmURL         = flag.String("llm-base-url", "", "OpenAI-compatible base URL for incident summaries (e.g. http://ollama:11434/v1); empty uses the built-in template")
 		llmModel       = flag.String("llm-model", "llama3.2", "model name for OpenAI-compatible endpoints")
 		leaseNS        = flag.String("lease-namespace", os.Getenv("POD_NAMESPACE"), "namespace where agents renew heartbeat Leases (defaults to $POD_NAMESPACE); empty disables Lease heartbeats")
+		enablePolicies = flag.Bool("enable-policy-crd", true, "honor GPUNodePolicy objects when the CRD is installed; the other flags become the default policy")
 		azureDeploy    = flag.String("azure-openai-deployment", "", "Azure OpenAI deployment name; when set, --llm-base-url is the Azure resource endpoint")
 	)
 	opts := zap.Options{}
@@ -52,14 +57,14 @@ func main() {
 		remediation.Policy{
 			GracePeriod: *grace, RecoveryPeriod: *recovery, StaleAfter: *staleAfter,
 			MaxUnavailable: *maxUnavailable, MaxUnavailablePercent: *maxUnavailPct, DeferRetry: time.Minute,
-		}, *llmURL, *llmModel, *azureDeploy, *leaseNS); err != nil {
+		}, *llmURL, *llmModel, *azureDeploy, *leaseNS, *enablePolicies); err != nil {
 		log.Error(err, "controller exited")
 		os.Exit(1)
 	}
 }
 
 func run(metricsAddr, probeAddr string, leaderElect bool, selector, drainScope string, dryRun bool,
-	policy remediation.Policy, llmURL, llmModel, azureDeploy, leaseNS string) error {
+	policy remediation.Policy, llmURL, llmModel, azureDeploy, leaseNS string, enablePolicies bool) error {
 
 	sel, err := labels.Parse(selector)
 	if err != nil {
@@ -93,6 +98,14 @@ func run(metricsAddr, probeAddr string, leaderElect bool, selector, drainScope s
 			&coordinationv1.Lease{}: {Namespaces: map[string]cache.Config{leaseNS: {}}},
 		}
 	}
+	if err := v1alpha1.AddToScheme(clientgoscheme.Scheme); err != nil {
+		return err
+	}
+	usePolicies := enablePolicies && policyCRDInstalled(cfg)
+	if enablePolicies && !usePolicies {
+		ctrl.Log.WithName("setup").Info("GPUNodePolicy CRD not installed; using flags only")
+	}
+
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Cache:                  cacheOpts,
 		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
@@ -115,9 +128,15 @@ func run(metricsAddr, probeAddr string, leaderElect bool, selector, drainScope s
 		Evictor:    controller.RESTEvictor{REST: clientset.PolicyV1().RESTClient()},
 
 		LeaseNamespace: leaseNS,
+		UsePolicyCRD:   usePolicies,
 	}
 	if err := r.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setup controller: %w", err)
+	}
+	if usePolicies {
+		if err := (&controller.PolicyStatusReconciler{Client: mgr.GetClient(), Resolver: r.Resolver()}).SetupWithManager(mgr); err != nil {
+			return fmt.Errorf("setup policy status controller: %w", err)
+		}
 	}
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		return err
@@ -129,4 +148,23 @@ func run(metricsAddr, probeAddr string, leaderElect bool, selector, drainScope s
 	ctrl.Log.WithName("setup").Info("starting controller", "selector", selector, "dryRun", dryRun,
 		"grace", policy.GracePeriod.String(), "recovery", policy.RecoveryPeriod.String(), "drainScope", drainScope)
 	return mgr.Start(ctrl.SetupSignalHandler())
+}
+
+// policyCRDInstalled reports whether the API server serves GPUNodePolicy, so a
+// controller upgraded without the CRD keeps working from flags alone.
+func policyCRDInstalled(cfg *rest.Config) bool {
+	dc, err := discovery.NewDiscoveryClientForConfig(cfg)
+	if err != nil {
+		return false
+	}
+	rl, err := dc.ServerResourcesForGroupVersion(v1alpha1.GroupVersion.String())
+	if err != nil {
+		return false
+	}
+	for _, r := range rl.APIResources {
+		if r.Kind == "GPUNodePolicy" {
+			return true
+		}
+	}
+	return false
 }
