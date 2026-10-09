@@ -30,6 +30,7 @@ import (
 	"github.com/Nags-gk/gpu-fleet-sentinel/internal/api"
 	"github.com/Nags-gk/gpu-fleet-sentinel/internal/incident"
 	"github.com/Nags-gk/gpu-fleet-sentinel/internal/remediation"
+	"github.com/Nags-gk/gpu-fleet-sentinel/internal/textutil"
 )
 
 // PodNodeNameIndex is the field index used to list pods on one node.
@@ -273,7 +274,7 @@ func (r *NodeReconciler) quarantine(ctx context.Context, node *corev1.Node, view
 			})
 		}
 		node.Annotations[api.AnnotationQuarantinedAt] = r.now().UTC().Format(time.RFC3339)
-		node.Annotations[api.AnnotationReason] = truncate(conditionMessage(node), 512)
+		node.Annotations[api.AnnotationReason] = textutil.Truncate(conditionMessage(node), 512)
 		// Optimistic locking: if anything else changed the node since we read
 		// it, the patch fails with a conflict and we retry on fresh data
 		// instead of overwriting someone else's taints.
@@ -385,12 +386,12 @@ func (r *NodeReconciler) annotateIncident(ctx context.Context, node *corev1.Node
 		return
 	}
 	orig := node.DeepCopy()
-	node.Annotations[api.AnnotationIncidentSummary] = truncate(summary, 1000)
+	node.Annotations[api.AnnotationIncidentSummary] = textutil.Truncate(summary, 1000)
 	if err := r.Patch(ctx, node, client.MergeFrom(orig)); err != nil {
 		logger.Error(err, "could not store incident summary")
 		return
 	}
-	r.Recorder.Event(node, corev1.EventTypeNormal, "IncidentSummary", truncate(summary, 1000))
+	r.Recorder.Event(node, corev1.EventTypeNormal, "IncidentSummary", textutil.Truncate(summary, 1000))
 }
 
 // release undoes only what quarantine did; a node a human had already cordoned
@@ -426,13 +427,6 @@ func hasTaint(n *corev1.Node) bool {
 		}
 	}
 	return false
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n-3] + "..."
 }
 
 // SetupWithManager wires the controller. MaxConcurrentReconciles is 1 on

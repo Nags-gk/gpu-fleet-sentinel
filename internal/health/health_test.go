@@ -226,3 +226,23 @@ func TestDebouncerSeed(t *testing.T) {
 		t.Fatal("Seed after Observe must be a no-op")
 	}
 }
+
+// Readings the rules cannot reason about fail the scrape (-> condition Unknown)
+// instead of silently reading as healthy.
+func TestParseDCGMRejectsUnusableValues(t *testing.T) {
+	for name, in := range map[string]string{
+		"nan temperature":  `DCGM_FI_DEV_GPU_TEMP{gpu="0"} NaN`,
+		"inf power":        `DCGM_FI_DEV_POWER_USAGE{gpu="0"} +Inf`,
+		"negative counter": `DCGM_FI_DEV_ECC_DBE_VOL_TOTAL{gpu="0"} -1`,
+		"huge counter":     `DCGM_FI_DEV_ECC_SBE_VOL_TOTAL{gpu="0"} 1e30`,
+		"bad xid":          `DCGM_FI_DEV_XID_ERRORS{gpu="0"} 70000`,
+	} {
+		if _, err := ParseDCGM(strings.NewReader(in + "\n")); err == nil {
+			t.Errorf("%s: expected an error", name)
+		}
+	}
+	// Metrics we do not consume may carry anything.
+	if _, err := ParseDCGM(strings.NewReader("DCGM_FI_DEV_FB_USED{gpu=\"0\"} NaN\n")); err != nil {
+		t.Errorf("unrelated NaN metric should be ignored: %v", err)
+	}
+}

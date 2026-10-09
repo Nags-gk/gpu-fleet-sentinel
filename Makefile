@@ -2,7 +2,7 @@ IMG ?= gpu-fleet-sentinel:dev
 CLUSTER ?= sentinel
 NAMESPACE ?= gpu-sentinel
 
-.PHONY: scale all fmt vet lint test test-integration envtest cover build image kind-up kind-load deploy e2e demo kind-down
+.PHONY: scale fuzz generate all fmt vet lint test test-integration envtest cover build image kind-up kind-load deploy e2e demo kind-down
 
 all: fmt vet test build
 
@@ -38,6 +38,15 @@ CONTROLLER_GEN ?= go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.17.2
 generate:
 	$(CONTROLLER_GEN) object paths=./api/...
 	$(CONTROLLER_GEN) crd paths=./api/... output:crd:dir=deploy/helm/gpu-fleet-sentinel/crds
+
+# Each fuzz target runs for FUZZTIME. Crashers are written to testdata/fuzz/ and
+# then run as ordinary tests, so commit them.
+FUZZTIME ?= 20s
+fuzz:
+	go test -run '^$$' -fuzz '^FuzzParseDCGM$$' -fuzztime $(FUZZTIME) ./internal/health
+	go test -run '^$$' -fuzz '^FuzzEvaluate$$' -fuzztime $(FUZZTIME) ./internal/health
+	go test -run '^$$' -fuzz '^FuzzChatCompletionsResponse$$' -fuzztime $(FUZZTIME) ./internal/incident
+	go test -run '^$$' -fuzz '^FuzzTruncate$$' -fuzztime $(FUZZTIME) ./internal/textutil
 
 cover:
 	go test -race -coverprofile=cover.out ./... && go tool cover -func=cover.out | tail -1

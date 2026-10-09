@@ -22,6 +22,7 @@ import (
 
 	"github.com/Nags-gk/gpu-fleet-sentinel/internal/api"
 	"github.com/Nags-gk/gpu-fleet-sentinel/internal/health"
+	"github.com/Nags-gk/gpu-fleet-sentinel/internal/textutil"
 )
 
 // Metrics are the agent's Prometheus series.
@@ -281,7 +282,7 @@ func (a *Agent) publish(ctx context.Context, status corev1.ConditionStatus, reas
 		Type:              api.ConditionGPUHealthy,
 		Status:            status,
 		Reason:            reason,
-		Message:           truncate(msg, 1024),
+		Message:           textutil.Truncate(msg, 1024),
 		LastHeartbeatTime: metav1.NewTime(now),
 	}
 	found := false
@@ -308,11 +309,4 @@ func (a *Agent) publish(ctx context.Context, status corev1.ConditionStatus, reas
 		return fmt.Errorf("patch node %s status: %w", a.NodeName, err)
 	}
 	return nil
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n-3] + "..."
 }

@@ -53,3 +53,18 @@ func TestDecide(t *testing.T) {
 		})
 	}
 }
+
+// A transition time in the future (node clock ahead of the controller) must not
+// stretch a timer beyond its configured period.
+func TestClockSkewDoesNotExtendTimers(t *testing.T) {
+	p := DefaultPolicy()
+	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	d := p.Decide(NodeView{Health: HealthUnhealthy, Since: now.Add(10 * time.Minute)}, FleetView{Total: 10}, now)
+	if d.Action != ActionWait || d.RequeueAfter != p.GracePeriod {
+		t.Fatalf("want Wait for exactly the grace period, got %+v", d)
+	}
+	d = p.Decide(NodeView{Health: HealthHealthy, Since: now.Add(10 * time.Minute), QuarantinedByUs: true}, FleetView{Total: 10, Quarantined: 1}, now)
+	if d.Action != ActionWait || d.RequeueAfter != p.RecoveryPeriod {
+		t.Fatalf("want Wait for exactly the recovery period, got %+v", d)
+	}
+}

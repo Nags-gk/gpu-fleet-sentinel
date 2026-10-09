@@ -72,7 +72,7 @@ training-h100   64        2           1             1        false    True    3d
 - `status` reports managed / healthy / unhealthy / quarantined counts, the budget, and `Ready` and `BudgetExhausted` conditions. More examples: [deploy/examples](deploy/examples/gpunodepolicy.yaml).
 - Without the CRD installed the controller runs from flags exactly as before.
 
-## Safety properties (each covered by tests)
+## Safety properties (each covered by tests, including property tests over random fleets; see [docs/TESTING.md](docs/TESTING.md))
 
 - **Disruption budget**: at most `max(maxUnavailable, maxUnavailablePercent × fleet)` nodes quarantined at once. Reconciles run with one worker so two nodes can't race for the last slot.
 - **Stale or unknown health never triggers action**: a crashed agent or exporter is not evidence of a bad GPU.
@@ -126,6 +126,7 @@ Real GPUs on AKS: [docs/AKS.md](docs/AKS.md).
 ```bash
 make test              # unit tests with the race detector
 make test-integration  # controller + agents against a real kube-apiserver (envtest)
+make fuzz              # fuzz the DCGM parser, rule engine and LLM decoder
 make lint              # golangci-lint
 ```
 

@@ -29,6 +29,15 @@ jobs:
       - name: coverage
         run: go tool cover -func=cover.out | tail -1
 
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version-file: go.mod}
+      - name: fuzz parsers and decoders (20s each)
+        run: make fuzz FUZZTIME=20s
+
   integration:
     runs-on: ubuntu-latest
     steps:

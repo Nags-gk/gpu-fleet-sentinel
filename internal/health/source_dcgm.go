@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -96,6 +97,9 @@ func ParseDCGM(r io.Reader) ([]GPUSample, error) {
 			if !ok {
 				continue
 			}
+			if err := checkValue(name, v); err != nil {
+				return nil, err
+			}
 			switch name {
 			case "DCGM_FI_DEV_GPU_TEMP":
 				s.TempC = v
@@ -123,6 +127,36 @@ func ParseDCGM(r io.Reader) ([]GPUSample, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Index < out[j].Index })
 	return out, nil
+}
+
+// checkValue rejects readings the rules cannot reason about. NaN compares false
+// against every threshold, so a NaN temperature would read as healthy, and
+// converting a negative or huge float to an unsigned counter is
+// implementation-defined in Go (amd64 and arm64 disagree). Failing the scrape
+// reports the node as Unknown, which never triggers remediation.
+func checkValue(name string, v float64) error {
+	switch name {
+	case "DCGM_FI_DEV_GPU_TEMP", "DCGM_FI_DEV_POWER_USAGE", "DCGM_FI_DEV_GPU_UTIL",
+		"DCGM_FI_DEV_ECC_SBE_VOL_TOTAL", "DCGM_FI_DEV_ECC_DBE_VOL_TOTAL",
+		"DCGM_FI_DEV_ROW_REMAP_FAILURE", "DCGM_FI_DEV_NVLINK_CRC_FLIT_ERROR_COUNT_TOTAL",
+		"DCGM_FI_DEV_XID_ERRORS":
+	default:
+		return nil
+	}
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return fmt.Errorf("parse dcgm metrics: %s is not a finite number (%v)", name, v)
+	}
+	switch name {
+	case "DCGM_FI_DEV_ECC_SBE_VOL_TOTAL", "DCGM_FI_DEV_ECC_DBE_VOL_TOTAL", "DCGM_FI_DEV_NVLINK_CRC_FLIT_ERROR_COUNT_TOTAL":
+		if v < 0 || v >= 1<<63 {
+			return fmt.Errorf("parse dcgm metrics: counter %s out of range (%v)", name, v)
+		}
+	case "DCGM_FI_DEV_XID_ERRORS":
+		if v < 0 || v > 65535 {
+			return fmt.Errorf("parse dcgm metrics: %s is not a valid XID (%v)", name, v)
+		}
+	}
+	return nil
 }
 
 func value(m *dto.Metric) float64 {
