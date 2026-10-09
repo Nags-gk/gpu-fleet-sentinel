@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -293,5 +294,47 @@ func TestShouldEvict(t *testing.T) {
 	r.DrainScope = DrainAllPods
 	if !r.shouldEvict(pod("cpu", "n", 0, "Job")) {
 		t.Error("drain scope 'all' should evict CPU pods")
+	}
+}
+
+func heartbeatLease(node string, renewed time.Time) *coordinationv1.Lease {
+	mt := metav1.NewMicroTime(renewed)
+	return &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{Name: api.LeaseName(node), Namespace: "gpu-sentinel"},
+		Spec:       coordinationv1.LeaseSpec{RenewTime: &mt},
+	}
+}
+
+// With Lease heartbeats the condition's own heartbeat is only rewritten on
+// change, so a fresh Lease must keep an old condition from looking stale.
+func TestFreshLeaseKeepsOldConditionActionable(t *testing.T) {
+	n := gpuNode("gpu-1", corev1.ConditionFalse, t0.Add(-time.Hour))
+	n.Status.Conditions[0].LastHeartbeatTime = metav1.NewTime(t0.Add(-time.Hour))
+	h := newHarness(t, nil, n, heartbeatLease("gpu-1", t0.Add(-10*time.Second)))
+	h.r.LeaseNamespace = "gpu-sentinel"
+	h.reconcile(t, "gpu-1")
+	if !h.node(t, "gpu-1").Spec.Unschedulable {
+		t.Fatal("fresh lease should make the unhealthy condition actionable")
+	}
+}
+
+func TestStaleLeaseIsIgnored(t *testing.T) {
+	n := gpuNode("gpu-1", corev1.ConditionFalse, t0.Add(-time.Hour))
+	n.Status.Conditions[0].LastHeartbeatTime = metav1.NewTime(t0.Add(-time.Hour))
+	h := newHarness(t, nil, n, heartbeatLease("gpu-1", t0.Add(-time.Hour)))
+	h.r.LeaseNamespace = "gpu-sentinel"
+	h.reconcile(t, "gpu-1")
+	if h.node(t, "gpu-1").Spec.Unschedulable {
+		t.Fatal("must not act when both heartbeats are stale")
+	}
+}
+
+// Agents that predate Lease support keep working through the condition.
+func TestMissingLeaseFallsBackToConditionHeartbeat(t *testing.T) {
+	h := newHarness(t, nil, gpuNode("gpu-1", corev1.ConditionFalse, t0.Add(-time.Hour)))
+	h.r.LeaseNamespace = "gpu-sentinel"
+	h.reconcile(t, "gpu-1")
+	if !h.node(t, "gpu-1").Spec.Unschedulable {
+		t.Fatal("fresh condition heartbeat should still be honored without a lease")
 	}
 }

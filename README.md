@@ -63,6 +63,8 @@ Measured with the simulated GPU backend. No physical GPUs were involved, so thes
 | Integration test | real kube-apiserver + etcd (envtest), 3 GPU nodes + 1 CPU node | fault → quarantine in ~2s with a 2s grace period; PDB-protected pod kept; budget held under concurrent failures; automatic release |
 | End-to-end test (CI) | kind, 4 workers, Helm install | XID 79 injected → node quarantined in **13 s** (10 s grace period) → GPU workload rescheduled on a healthy node at **14 s** → node released **23 s** after the fault cleared (20 s recovery period); disruption budget held with two nodes failing at once |
 
+| Scale benchmark | 1,000 kwok nodes + 1,000 real agents + real controller against a real kube-apiserver/etcd | Node status writes **66.7/s → 0** with Lease heartbeats; 150 simultaneous faults: budget held at exactly 100, controller adds under 1.8 s beyond the grace period. See [docs/SCALE.md](docs/SCALE.md) |
+
 ## Quick start (laptop, no GPU required)
 
 Prerequisites: Docker, [kind](https://kind.sigs.k8s.io/), kubectl, Helm, Go 1.24.
@@ -131,6 +133,14 @@ intentional. XID 63 (a *successful* row remap) is only a warning, because treati
 it as a fault would drain a node whose memory just repaired itself; XID 64 (remap
 failure) is critical. A restarted agent resumes from the condition already on the
 node rather than briefly reporting healthy and resetting the grace timer.
+
+**Heartbeats go through Leases, not the Node object.** Patching every node's status
+every 15 s made 1,000 agents issue ~67 Node writes/s, each one a watch event for every
+Node watcher in the cluster. Agents now renew a tiny Lease and rewrite the condition only
+when it changes (or every 5 min, which also repairs a deleted condition). The controller
+treats a node as live if either heartbeat is fresh, so older agents keep working, and the
+agent falls back to condition heartbeats if it cannot write its Lease. Set
+`agent.leaseHeartbeat=false` for the old behavior.
 
 **Condition timestamps have 1-second resolution**, so a grace period can fire up
 to ~1s early. That is irrelevant at the default 2-minute grace period, and is

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -76,12 +77,16 @@ type NodeReconciler struct {
 	Summarizer incident.Summarizer
 	// Evictor sends evictions; nil falls back to the controller-runtime client.
 	Evictor Evictor
-	Now     func() time.Time
+	// LeaseNamespace is where agents renew their heartbeat Leases. Empty
+	// disables Lease lookups and relies on the condition heartbeat alone.
+	LeaseNamespace string
+	Now            func() time.Time
 }
 
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods/eviction,verbs=create
+// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile evaluates one node and applies the policy decision.
@@ -102,6 +107,13 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, err
 	}
 	view := nodeView(&node)
+	hb, err := r.leaseHeartbeat(ctx, node.Name)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if hb.After(view.Heartbeat) {
+		view.Heartbeat = hb
+	}
 	d := r.Policy.Decide(view, fleet, now)
 	decisionsTotal.WithLabelValues(string(d.Action)).Inc()
 	logger.V(1).Info("decision", "action", d.Action, "reason", d.Reason, "health", view.Health)
@@ -152,6 +164,26 @@ func (r *NodeReconciler) fleetView(ctx context.Context) (remediation.FleetView, 
 	managedNodes.Set(float64(f.Total))
 	quarantinedNodes.Set(float64(f.Quarantined))
 	return f, nil
+}
+
+// leaseHeartbeat returns the agent's last Lease renewal, or the zero time if
+// there is none. The condition heartbeat is still honored by the caller, so
+// agents without Lease support keep working.
+func (r *NodeReconciler) leaseHeartbeat(ctx context.Context, node string) (time.Time, error) {
+	if r.LeaseNamespace == "" {
+		return time.Time{}, nil
+	}
+	var l coordinationv1.Lease
+	err := r.Get(ctx, client.ObjectKey{Namespace: r.LeaseNamespace, Name: api.LeaseName(node)}, &l)
+	switch {
+	case apierrors.IsNotFound(err):
+		return time.Time{}, nil
+	case err != nil:
+		return time.Time{}, fmt.Errorf("get heartbeat lease for %s: %w", node, err)
+	case l.Spec.RenewTime == nil:
+		return time.Time{}, nil
+	}
+	return l.Spec.RenewTime.Time, nil
 }
 
 func nodeView(n *corev1.Node) remediation.NodeView {

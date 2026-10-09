@@ -5,6 +5,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"sync"
@@ -12,7 +13,9 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/prometheus/client_golang/prometheus"
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -31,6 +34,10 @@ type Metrics struct {
 	SampleLatency prometheus.Histogram
 	SampleErrors  prometheus.Counter
 	PatchErrors   prometheus.Counter
+	// Patches counts condition writes; with Lease heartbeats it should stay
+	// near zero on a steady node.
+	Patches     prometheus.Counter
+	LeaseErrors prometheus.Counter
 }
 
 // NewMetrics registers the agent metrics on reg.
@@ -62,8 +69,14 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Name: "sentinel_condition_patch_errors_total", Help: "Failed node condition updates.",
 		}),
 	}
+	m.Patches = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "sentinel_condition_patches_total", Help: "Node condition writes issued.",
+	})
+	m.LeaseErrors = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "sentinel_lease_renew_errors_total", Help: "Failed heartbeat Lease renewals.",
+	})
 	reg.MustRegister(m.Temperature, m.Power, m.GPUStatus, m.NodeHealthy, m.Findings,
-		m.SampleLatency, m.SampleErrors, m.PatchErrors)
+		m.SampleLatency, m.SampleErrors, m.PatchErrors, m.Patches, m.LeaseErrors)
 	return m
 }
 
@@ -79,10 +92,28 @@ type Agent struct {
 	Log       logr.Logger
 	Now       func() time.Time
 
+	// LeaseNamespace enables Lease heartbeats: the agent renews a Lease there
+	// every tick and rewrites the node condition only when it changes (or every
+	// ConditionResync). Empty keeps the legacy behavior of patching the
+	// condition, with a fresh heartbeat timestamp, on every tick.
+	LeaseNamespace string
+	// ConditionResync bounds how stale the condition may get while nothing
+	// changes, which also repairs a condition deleted out from under the agent.
+	// Only used with LeaseNamespace.
+	ConditionResync time.Duration
+
+	published  publishedState
 	seeded     bool
 	mu         sync.RWMutex
 	lastReport health.Report
 	lastErr    error
+}
+
+type publishedState struct {
+	ok          bool
+	status      corev1.ConditionStatus
+	reason, msg string
+	at          time.Time
 }
 
 // LastReport returns the most recent evaluation, for the /debug/report endpoint.
@@ -131,7 +162,7 @@ func (a *Agent) Tick(ctx context.Context) error {
 		a.mu.Unlock()
 		// Telemetry loss is reported as Unknown, never as unhealthy: the
 		// controller must not drain a node just because an exporter crashed.
-		return a.publish(ctx, corev1.ConditionUnknown, api.ReasonScrapeFailed, err.Error(), now)
+		return a.report(ctx, corev1.ConditionUnknown, api.ReasonScrapeFailed, err.Error(), now)
 	}
 
 	report := a.Evaluator.Evaluate(health.Snapshot{Node: a.NodeName, Time: now, Samples: samples})
@@ -164,7 +195,59 @@ func (a *Agent) Tick(ctx context.Context) error {
 		a.Metrics.NodeHealthy.Set(0)
 		status, reason = corev1.ConditionFalse, api.ReasonFault
 	}
-	return a.publish(ctx, status, reason, report.Summary(), now)
+	return a.report(ctx, status, reason, report.Summary(), now)
+}
+
+// report renews the heartbeat Lease and writes the condition when needed.
+func (a *Agent) report(ctx context.Context, status corev1.ConditionStatus, reason, msg string, now time.Time) error {
+	leaseOK := true
+	if a.LeaseNamespace != "" {
+		if err := a.renewLease(ctx, now); err != nil {
+			a.Metrics.LeaseErrors.Inc()
+			a.Log.Error(err, "lease heartbeat failed; falling back to the condition heartbeat")
+			leaseOK = false
+		}
+	}
+	p := a.published
+	changed := !p.ok || p.status != status || p.reason != reason || p.msg != msg
+	due := a.LeaseNamespace == "" || !leaseOK || a.ConditionResync <= 0 || now.Sub(p.at) >= a.ConditionResync
+	if !changed && !due {
+		return nil
+	}
+	if err := a.publish(ctx, status, reason, msg, now); err != nil {
+		return err
+	}
+	a.published = publishedState{ok: true, status: status, reason: reason, msg: msg, at: now}
+	return nil
+}
+
+// renewLease bumps spec.renewTime with a merge patch (no read), creating the
+// Lease on first use. The Lease is owned by the Node so it is garbage collected
+// with it.
+func (a *Agent) renewLease(ctx context.Context, now time.Time) error {
+	lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Name: api.LeaseName(a.NodeName), Namespace: a.LeaseNamespace}}
+	renew := metav1.NewMicroTime(now)
+	body, err := json.Marshal(map[string]any{"spec": map[string]any{"renewTime": renew}})
+	if err != nil {
+		return err
+	}
+	err = a.Client.Patch(ctx, lease, client.RawPatch(types.MergePatchType, body))
+	if !apierrors.IsNotFound(err) {
+		return err
+	}
+	var node corev1.Node
+	if err := a.Client.Get(ctx, types.NamespacedName{Name: a.NodeName}, &node); err != nil {
+		return fmt.Errorf("get node for lease owner: %w", err)
+	}
+	dur := int32(max(3*a.Interval, 15*time.Second) / time.Second)
+	lease.OwnerReferences = []metav1.OwnerReference{{
+		APIVersion: "v1", Kind: "Node", Name: node.Name, UID: node.UID,
+	}}
+	lease.Spec = coordinationv1.LeaseSpec{HolderIdentity: &a.NodeName, LeaseDurationSeconds: &dur, RenewTime: &renew}
+	if err := a.Client.Create(ctx, lease); err != nil && !apierrors.IsAlreadyExists(err) {
+		return err
+	}
+	return nil
 }
 
 // seedDebouncer resumes from the condition already on the node. Without it a
@@ -219,6 +302,7 @@ func (a *Agent) publish(ctx context.Context, status corev1.ConditionStatus, reas
 		node.Status.Conditions = append(node.Status.Conditions, cond)
 	}
 
+	a.Metrics.Patches.Inc()
 	if err := a.Client.Status().Patch(ctx, &node, client.StrategicMergeFrom(orig)); err != nil {
 		a.Metrics.PatchErrors.Inc()
 		return fmt.Errorf("patch node %s status: %w", a.NodeName, err)

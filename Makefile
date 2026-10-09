@@ -2,7 +2,7 @@ IMG ?= gpu-fleet-sentinel:dev
 CLUSTER ?= sentinel
 NAMESPACE ?= gpu-sentinel
 
-.PHONY: all fmt vet lint test test-integration envtest cover build image kind-up kind-load deploy e2e demo kind-down
+.PHONY: scale all fmt vet lint test test-integration envtest cover build image kind-up kind-load deploy e2e demo kind-down
 
 all: fmt vet test build
 
@@ -27,6 +27,10 @@ envtest:
 test-integration:
 	KUBEBUILDER_ASSETS="$$(go run sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.20 use $(ENVTEST_K8S) --bin-dir $(ENVTEST_DIR) -p path)" \
 	  go test -tags integration -race -count=1 -v ./test/integration/
+
+# 1,000-node benchmark; needs kwok (brew install kwok) and `make envtest` assets.
+scale:
+	KUBEBUILDER_ASSETS="$$(go run sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.20 use $(ENVTEST_K8S) --bin-dir $(ENVTEST_DIR) -p path)" hack/scale.sh
 
 cover:
 	go test -race -coverprofile=cover.out ./... && go tool cover -func=cover.out | tail -1

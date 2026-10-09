@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,11 +12,13 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/Nags-gk/gpu-fleet-sentinel/internal/api"
 	"github.com/Nags-gk/gpu-fleet-sentinel/internal/health"
@@ -213,5 +216,98 @@ func TestRestartKeepsUnhealthyCondition(t *testing.T) {
 	}
 	if !cond.LastTransitionTime.Equal(&since) {
 		t.Fatalf("transition time reset to %v, want %v", cond.LastTransitionTime, since)
+	}
+}
+
+func leaseAgent(t *testing.T, now *time.Time) (*Agent, client.Client) {
+	t.Helper()
+	sim := health.NewSimSource("gpu-node-1", "H100", 4, 1)
+	a, c, _ := newAgent(t, sim, now)
+	a.LeaseNamespace = "gpu-sentinel"
+	a.ConditionResync = 5 * time.Minute
+	return a, c
+}
+
+func getLease(t *testing.T, c client.Client) *coordinationv1.Lease {
+	t.Helper()
+	var l coordinationv1.Lease
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "gpu-sentinel", Name: api.LeaseName("gpu-node-1")}, &l); err != nil {
+		t.Fatal(err)
+	}
+	return &l
+}
+
+func TestLeaseHeartbeatAvoidsRedundantConditionPatches(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	a, c := leaseAgent(t, &now)
+
+	for i := 0; i < 10; i++ {
+		if err := a.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+		now = now.Add(15 * time.Second)
+	}
+	if got := testutil.ToFloat64(a.Metrics.Patches); got != 1 {
+		t.Fatalf("steady node: %v condition patches in 10 ticks, want 1", got)
+	}
+	l := getLease(t, c)
+	if l.Spec.RenewTime == nil || !l.Spec.RenewTime.Time.Equal(now.Add(-15*time.Second)) {
+		t.Fatalf("lease not renewed on every tick: %+v", l.Spec)
+	}
+	if len(l.OwnerReferences) != 1 || l.OwnerReferences[0].Kind != "Node" {
+		t.Fatalf("lease should be owned by the node: %+v", l.OwnerReferences)
+	}
+
+	// The periodic resync still rewrites the condition.
+	now = now.Add(5 * time.Minute)
+	_ = a.Tick(ctx)
+	if got := testutil.ToFloat64(a.Metrics.Patches); got != 2 {
+		t.Fatalf("resync: %v patches, want 2", got)
+	}
+}
+
+func TestLeaseModeStillPublishesTransitionsImmediately(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	sim := health.NewSimSource("gpu-node-1", "H100", 4, 1)
+	a, c, _ := newAgent(t, sim, &now)
+	a.LeaseNamespace, a.ConditionResync = "gpu-sentinel", time.Hour
+
+	_ = a.Tick(ctx)
+	_ = sim.Inject(1, health.FaultXID79)
+	for i := 0; i < 2; i++ { // FailAfter is 2
+		now = now.Add(time.Second)
+		_ = a.Tick(ctx)
+	}
+	cond, _ := gpuCondition(t, c)
+	if cond.Status != corev1.ConditionFalse || !strings.Contains(cond.Message, "XID 79") {
+		t.Fatalf("fault must be published without waiting for resync: %+v", cond)
+	}
+}
+
+// If the Lease cannot be renewed, the condition heartbeat must take over so the
+// controller does not mistake a working agent for a dead one.
+func TestLeaseFailureFallsBackToConditionHeartbeat(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	a, c := leaseAgent(t, &now)
+	a.Client = interceptor.NewClient(c.(client.WithWatch), interceptor.Funcs{
+		Patch: func(ctx context.Context, cl client.WithWatch, obj client.Object, p client.Patch, o ...client.PatchOption) error {
+			if _, ok := obj.(*coordinationv1.Lease); ok {
+				return errors.New("forbidden")
+			}
+			return cl.Patch(ctx, obj, p, o...)
+		},
+	})
+	for i := 0; i < 3; i++ {
+		_ = a.Tick(ctx)
+		now = now.Add(15 * time.Second)
+	}
+	if got := testutil.ToFloat64(a.Metrics.Patches); got != 3 {
+		t.Fatalf("with a broken lease the condition must carry the heartbeat: %v patches, want 3", got)
+	}
+	if got := testutil.ToFloat64(a.Metrics.LeaseErrors); got != 3 {
+		t.Fatalf("lease errors = %v, want 3", got)
 	}
 }

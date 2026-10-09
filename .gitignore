@@ -1,5 +1,6 @@
-bin/
-cover.out
 *.test
 .idea/
 .vscode/
+/bin/
+cover.out
+/scale-results*/

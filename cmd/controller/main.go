@@ -7,9 +7,12 @@ import (
 	"os"
 	"time"
 
+	coordinationv1 "k8s.io/api/coordination/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -36,6 +39,7 @@ func main() {
 		dryRun         = flag.Bool("dry-run", false, "log and emit events but never cordon or evict")
 		llmURL         = flag.String("llm-base-url", "", "OpenAI-compatible base URL for incident summaries (e.g. http://ollama:11434/v1); empty uses the built-in template")
 		llmModel       = flag.String("llm-model", "llama3.2", "model name for OpenAI-compatible endpoints")
+		leaseNS        = flag.String("lease-namespace", os.Getenv("POD_NAMESPACE"), "namespace where agents renew heartbeat Leases (defaults to $POD_NAMESPACE); empty disables Lease heartbeats")
 		azureDeploy    = flag.String("azure-openai-deployment", "", "Azure OpenAI deployment name; when set, --llm-base-url is the Azure resource endpoint")
 	)
 	opts := zap.Options{}
@@ -48,14 +52,14 @@ func main() {
 		remediation.Policy{
 			GracePeriod: *grace, RecoveryPeriod: *recovery, StaleAfter: *staleAfter,
 			MaxUnavailable: *maxUnavailable, MaxUnavailablePercent: *maxUnavailPct, DeferRetry: time.Minute,
-		}, *llmURL, *llmModel, *azureDeploy); err != nil {
+		}, *llmURL, *llmModel, *azureDeploy, *leaseNS); err != nil {
 		log.Error(err, "controller exited")
 		os.Exit(1)
 	}
 }
 
 func run(metricsAddr, probeAddr string, leaderElect bool, selector, drainScope string, dryRun bool,
-	policy remediation.Policy, llmURL, llmModel, azureDeploy string) error {
+	policy remediation.Policy, llmURL, llmModel, azureDeploy, leaseNS string) error {
 
 	sel, err := labels.Parse(selector)
 	if err != nil {
@@ -80,7 +84,17 @@ func run(metricsAddr, probeAddr string, leaderElect bool, selector, drainScope s
 		return fmt.Errorf("clientset: %w", err)
 	}
 
+	cacheOpts := cache.Options{}
+	if leaseNS != "" {
+		// Cache only the agents' Leases. An unscoped Lease informer would also
+		// hold every kubelet heartbeat Lease in the cluster, and needs
+		// cluster-wide RBAC.
+		cacheOpts.ByObject = map[client.Object]cache.ByObject{
+			&coordinationv1.Lease{}: {Namespaces: map[string]cache.Config{leaseNS: {}}},
+		}
+	}
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+		Cache:                  cacheOpts,
 		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         leaderElect,
@@ -99,6 +113,8 @@ func run(metricsAddr, probeAddr string, leaderElect bool, selector, drainScope s
 		DryRun:     dryRun,
 		Summarizer: summarizer,
 		Evictor:    controller.RESTEvictor{REST: clientset.PolicyV1().RESTClient()},
+
+		LeaseNamespace: leaseNS,
 	}
 	if err := r.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setup controller: %w", err)

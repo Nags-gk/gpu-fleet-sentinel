@@ -15,6 +15,10 @@ agent:
   # the node IP (hostPort/hostNetwork), or override this with its Service/pod URL.
   dcgmURL: "http://$(HOST_IP):9400/metrics"
   interval: 15s
+  # Heartbeat through a small Lease and rewrite the node condition only when it
+  # changes (or every conditionResync). false = legacy: patch the node every interval.
+  leaseHeartbeat: true
+  conditionResync: 5m
   failAfter: 2
   recoverAfter: 4
   expectedGPUs: 0

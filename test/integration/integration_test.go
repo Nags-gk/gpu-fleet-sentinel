@@ -76,7 +76,7 @@ func TestEndToEndAgainstRealAPIServer(t *testing.T) {
 		Client: mgr.GetClient(), Recorder: mgr.GetEventRecorderFor("sentinel"),
 		Policy: remediation.Policy{GracePeriod: 2 * time.Second, RecoveryPeriod: 3 * time.Second,
 			StaleAfter: time.Minute, MaxUnavailable: 1, DeferRetry: time.Second},
-		Selector: sel, DrainScope: controller.DrainGPUPods, Summarizer: incident.Template{},
+		Selector: sel, DrainScope: controller.DrainGPUPods, Summarizer: incident.Template{}, LeaseNamespace: "default",
 		Evictor: controller.RESTEvictor{REST: kubernetes.NewForConfigOrDie(cfg).PolicyV1().RESTClient()},
 	}
 	must(t, r.SetupWithManager(mgr))
@@ -93,6 +93,7 @@ func TestEndToEndAgainstRealAPIServer(t *testing.T) {
 			Debouncer: &health.Debouncer{FailAfter: 2, RecoverAfter: 2},
 			Client:    c, Metrics: agent.NewMetrics(prometheus.NewRegistry()),
 			Interval: 300 * time.Millisecond, Log: logr.Discard(),
+			LeaseNamespace: "default", ConditionResync: time.Hour,
 		}
 		go func() { _ = a.Run(ctx) }()
 	}
