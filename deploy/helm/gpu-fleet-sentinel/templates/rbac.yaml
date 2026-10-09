@@ -119,3 +119,28 @@ subjects:
   - kind: ServiceAccount
     name: {{ .Release.Name }}-controller
     namespace: {{ .Release.Namespace }}
+{{- if eq .Values.controller.escalation.actuator "pod" }}
+---
+# Only rendered for the opt-in pod actuator: lets the controller create and
+# remove its reboot pods in the release namespace, nowhere else.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}-reboot-pods
+  labels: {{- include "sentinel.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [create, delete, deletecollection]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Release.Name }}-reboot-pods
+  labels: {{- include "sentinel.labels" . | nindent 4 }}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ .Release.Name }}-reboot-pods}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-controller
+    namespace: {{ .Release.Namespace }}
+{{- end }}

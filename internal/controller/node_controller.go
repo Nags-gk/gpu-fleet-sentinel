@@ -85,6 +85,9 @@ type NodeReconciler struct {
 	// and DryRun above act as the lowest-precedence default policy and as the
 	// values a GPUNodePolicy inherits for fields it leaves unset.
 	UsePolicyCRD bool
+	// Actuator carries out escalation (reboot, replacement) for policies that
+	// enable it. Nil disables escalation everywhere.
+	Actuator RepairActuator
 	// LeaseNamespace is where agents renew their heartbeat Leases. Empty
 	// disables Lease lookups and relies on the condition heartbeat alone.
 	LeaseNamespace string
@@ -151,7 +154,7 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 			r.Recorder.Event(&node, corev1.EventTypeNormal, "DryRunQuarantine", conditionMessage(&node))
 			return ctrl.Result{}, nil
 		}
-		return r.quarantine(ctx, &node, view, rp.DrainScope)
+		return r.quarantine(ctx, &node, view, rp)
 
 	case remediation.ActionRelease:
 		if rp.DryRun {
@@ -254,7 +257,7 @@ func isQuarantinedByUs(n *corev1.Node) bool {
 
 // quarantine cordons, taints and drains the node. Every step is idempotent,
 // so the controller can crash at any point and safely redo the work.
-func (r *NodeReconciler) quarantine(ctx context.Context, node *corev1.Node, view remediation.NodeView, scope DrainScope) (ctrl.Result, error) {
+func (r *NodeReconciler) quarantine(ctx context.Context, node *corev1.Node, view remediation.NodeView, rp *ResolvedPolicy) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithValues("node", node.Name)
 	firstTime := !view.QuarantinedByUs
 
@@ -288,7 +291,7 @@ func (r *NodeReconciler) quarantine(ctx context.Context, node *corev1.Node, view
 		r.Recorder.Event(node, corev1.EventTypeWarning, "Quarantined", "GPU unhealthy: "+conditionMessage(node))
 	}
 
-	evicted, blocked, err := r.drain(ctx, node, scope)
+	evicted, blocked, err := r.drain(ctx, node, rp.DrainScope)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -304,7 +307,9 @@ func (r *NodeReconciler) quarantine(ctx context.Context, node *corev1.Node, view
 			"%d pod(s) protected by PodDisruptionBudget; retrying", blocked)
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
-	return ctrl.Result{}, nil
+	// Only a fully drained node is a candidate for repair.
+	wait, err := r.escalate(ctx, node, rp)
+	return ctrl.Result{RequeueAfter: wait}, err
 }
 
 // drain evicts pods through the Eviction API so PodDisruptionBudgets are honored.
@@ -408,12 +413,20 @@ func (r *NodeReconciler) release(ctx context.Context, node *corev1.Node) error {
 	if node.Annotations[api.AnnotationWasUnschedulable] != "true" {
 		node.Spec.Unschedulable = false
 	}
+	// Repair attempts and their timestamp stay: they bound how often a node that
+	// keeps failing can be rebooted.
 	for _, k := range []string{api.AnnotationQuarantinedAt, api.AnnotationReason,
-		api.AnnotationWasUnschedulable, api.AnnotationIncidentSummary} {
+		api.AnnotationWasUnschedulable, api.AnnotationIncidentSummary,
+		api.AnnotationRebootRequested, api.AnnotationReplacementRequested} {
 		delete(node.Annotations, k)
 	}
 	if err := r.Patch(ctx, node, client.MergeFromWithOptions(orig, client.MergeFromWithOptimisticLock{})); err != nil {
 		return fmt.Errorf("release %s: %w", node.Name, err)
+	}
+	if c, ok := r.Actuator.(repairCleaner); ok {
+		if err := c.Cleanup(ctx, node); err != nil {
+			log.FromContext(ctx).Error(err, "could not clean up reboot pods", "node", node.Name)
+		}
 	}
 	log.FromContext(ctx).Info("node released", "node", node.Name)
 	r.Recorder.Event(node, corev1.EventTypeNormal, "Released", "GPU healthy for the full recovery period")
@@ -479,7 +492,10 @@ func gpuStateChanged() predicate.Predicate {
 				return true
 			}
 			return oldN.Spec.Unschedulable != newN.Spec.Unschedulable ||
-				isQuarantinedByUs(oldN) != isQuarantinedByUs(newN)
+				isQuarantinedByUs(oldN) != isQuarantinedByUs(newN) ||
+				// Repair steps change policy status; they are rare, one per attempt.
+				oldN.Annotations[api.AnnotationLastRepairAt] != newN.Annotations[api.AnnotationLastRepairAt] ||
+				oldN.Annotations[api.AnnotationReplacementRequested] != newN.Annotations[api.AnnotationReplacementRequested]
 		},
 	}
 }

@@ -66,7 +66,13 @@ func TestGPUNodePolicyAgainstRealAPIServer(t *testing.T) {
 			"negative-grace": {v1alpha1.GPUNodePolicySpec{NodeSelector: sel, GracePeriod: &metav1.Duration{Duration: -time.Second}}, "non-negative"},
 			"zero-stale":     {v1alpha1.GPUNodePolicySpec{NodeSelector: sel, StaleAfter: &metav1.Duration{}}, "positive"},
 			"percent-101":    {v1alpha1.GPUNodePolicySpec{NodeSelector: sel, MaxUnavailablePercent: ptr.To[int32](101)}, "100"},
-			"bad-scope":      {v1alpha1.GPUNodePolicySpec{NodeSelector: sel, DrainScope: ptr.To(v1alpha1.DrainScope("everything"))}, "Unsupported value"},
+			"escalation-zero-after": {v1alpha1.GPUNodePolicySpec{NodeSelector: sel,
+				Escalation: &v1alpha1.EscalationSpec{After: metav1.Duration{}}}, "positive"},
+			"escalation-attempts-9": {v1alpha1.GPUNodePolicySpec{NodeSelector: sel,
+				Escalation: &v1alpha1.EscalationSpec{After: metav1.Duration{Duration: time.Minute}, MaxAttempts: ptr.To[int32](9)}}, "5"},
+			"escalation-bad-action": {v1alpha1.GPUNodePolicySpec{NodeSelector: sel,
+				Escalation: &v1alpha1.EscalationSpec{After: metav1.Duration{Duration: time.Minute}, Action: ptr.To(v1alpha1.EscalationAction("Nuke"))}}, "Unsupported value"},
+			"bad-scope": {v1alpha1.GPUNodePolicySpec{NodeSelector: sel, DrainScope: ptr.To(v1alpha1.DrainScope("everything"))}, "Unsupported value"},
 		}
 		for name, tc := range rejected {
 			err := mk(name, tc.spec)
@@ -95,6 +101,7 @@ func TestGPUNodePolicyAgainstRealAPIServer(t *testing.T) {
 				StaleAfter: time.Minute, MaxUnavailable: 1, DeferRetry: time.Second},
 			Selector: sel, DrainScope: controller.DrainGPUPods, Summarizer: incident.Template{},
 			UsePolicyCRD: true,
+			Actuator:     controller.AnnotationActuator{Client: mgr.GetClient(), Now: time.Now},
 			Evictor:      controller.RESTEvictor{REST: kubernetes.NewForConfigOrDie(cfg).PolicyV1().RESTClient()},
 		}
 		must(t, r.SetupWithManager(mgr))
@@ -141,6 +148,62 @@ func TestGPUNodePolicyAgainstRealAPIServer(t *testing.T) {
 			return p.Status.ManagedNodes == 1 && p.Status.QuarantinedNodes == 1 && p.Status.UnhealthyNodes == 1 &&
 				p.Status.Budget == 1 && meta.IsStatusConditionTrue(p.Status.Conditions, v1alpha1.ConditionReady) &&
 				len(p.Status.QuarantinedNodeNames) == 1 && p.Status.QuarantinedNodeNames[0] == "in-policy"
+		})
+
+		// --- Escalation: a node that never recovers is asked to reboot once,
+		// then flagged for replacement, and never touched again.
+		must(t, c.Create(ctx, &v1alpha1.GPUNodePolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: "pool-repair"},
+			Spec: v1alpha1.GPUNodePolicySpec{
+				NodeSelector: metav1.LabelSelector{MatchLabels: map[string]string{"pool": "repair"}},
+				GracePeriod:  &metav1.Duration{Duration: time.Second},
+				Escalation: &v1alpha1.EscalationSpec{
+					After:       metav1.Duration{Duration: 3 * time.Second},
+					Cooldown:    &metav1.Duration{Duration: 3 * time.Second},
+					MaxAttempts: ptr.To[int32](1),
+				},
+			},
+		}))
+		rn := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "repair-me", Labels: map[string]string{
+			"nvidia.com/gpu.present": "true", "pool": "repair"}}}
+		must(t, c.Create(ctx, rn))
+		keepAlive := func() { // stand in for an agent: keep the heartbeat fresh, the fault persistent
+			var n corev1.Node
+			if c.Get(ctx, types.NamespacedName{Name: "repair-me"}, &n) != nil {
+				return
+			}
+			now := metav1.Now()
+			trans := now
+			for _, cd := range n.Status.Conditions {
+				if cd.Type == api.ConditionGPUHealthy {
+					trans = cd.LastTransitionTime
+				}
+			}
+			n.Status.Conditions = []corev1.NodeCondition{{Type: api.ConditionGPUHealthy, Status: corev1.ConditionFalse,
+				Message: "GPU0: XID 79", LastTransitionTime: trans, LastHeartbeatTime: now}}
+			_ = c.Status().Update(ctx, &n)
+		}
+		keepAlive()
+		eventually(t, 40*time.Second, "reboot requested then replacement requested", func() bool {
+			keepAlive()
+			var n corev1.Node
+			if c.Get(ctx, types.NamespacedName{Name: "repair-me"}, &n) != nil {
+				return false
+			}
+			return n.Annotations[api.AnnotationRepairAttempts] == "1" &&
+				strings.HasPrefix(n.Annotations[api.AnnotationRebootRequested], "attempt-1@") &&
+				n.Annotations[api.AnnotationReplacementRequested] != ""
+		})
+		time.Sleep(8 * time.Second) // well past the cooldown: no further reboot attempts
+		keepAlive()
+		var after corev1.Node
+		must(t, c.Get(ctx, types.NamespacedName{Name: "repair-me"}, &after))
+		if after.Annotations[api.AnnotationRepairAttempts] != "1" {
+			t.Fatalf("a handed-off node must not be rebooted again, attempts=%q", after.Annotations[api.AnnotationRepairAttempts])
+		}
+		eventually(t, 20*time.Second, "status counts the replacement request", func() bool {
+			var p v1alpha1.GPUNodePolicy
+			return c.Get(ctx, types.NamespacedName{Name: "pool-repair"}, &p) == nil && p.Status.ReplacementRequestedNodes == 1
 		})
 	})
 }

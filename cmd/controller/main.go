@@ -45,6 +45,9 @@ func main() {
 		llmModel       = flag.String("llm-model", "llama3.2", "model name for OpenAI-compatible endpoints")
 		leaseNS        = flag.String("lease-namespace", os.Getenv("POD_NAMESPACE"), "namespace where agents renew heartbeat Leases (defaults to $POD_NAMESPACE); empty disables Lease heartbeats")
 		enablePolicies = flag.Bool("enable-policy-crd", true, "honor GPUNodePolicy objects when the CRD is installed; the other flags become the default policy")
+		actuatorName   = flag.String("escalation-actuator", "annotation", "how GPUNodePolicy escalation repairs nodes: annotation (mark the node for external automation, no extra privileges), pod (reboot via a privileged pod in --reboot-namespace), or none")
+		rebootImage    = flag.String("reboot-image", "busybox:1.37", "image for the reboot pod (needs nsenter) when --escalation-actuator=pod")
+		rebootNS       = flag.String("reboot-namespace", os.Getenv("POD_NAMESPACE"), "namespace for reboot pods (defaults to $POD_NAMESPACE)")
 		azureDeploy    = flag.String("azure-openai-deployment", "", "Azure OpenAI deployment name; when set, --llm-base-url is the Azure resource endpoint")
 	)
 	opts := zap.Options{}
@@ -57,14 +60,14 @@ func main() {
 		remediation.Policy{
 			GracePeriod: *grace, RecoveryPeriod: *recovery, StaleAfter: *staleAfter,
 			MaxUnavailable: *maxUnavailable, MaxUnavailablePercent: *maxUnavailPct, DeferRetry: time.Minute,
-		}, *llmURL, *llmModel, *azureDeploy, *leaseNS, *enablePolicies); err != nil {
+		}, *llmURL, *llmModel, *azureDeploy, *leaseNS, *enablePolicies, *actuatorName, *rebootImage, *rebootNS); err != nil {
 		log.Error(err, "controller exited")
 		os.Exit(1)
 	}
 }
 
 func run(metricsAddr, probeAddr string, leaderElect bool, selector, drainScope string, dryRun bool,
-	policy remediation.Policy, llmURL, llmModel, azureDeploy, leaseNS string, enablePolicies bool) error {
+	policy remediation.Policy, llmURL, llmModel, azureDeploy, leaseNS string, enablePolicies bool, actuatorName, rebootImage, rebootNS string) error {
 
 	sel, err := labels.Parse(selector)
 	if err != nil {
@@ -129,6 +132,18 @@ func run(metricsAddr, probeAddr string, leaderElect bool, selector, drainScope s
 
 		LeaseNamespace: leaseNS,
 		UsePolicyCRD:   usePolicies,
+	}
+	switch actuatorName {
+	case "annotation":
+		r.Actuator = controller.AnnotationActuator{Client: mgr.GetClient(), Now: time.Now}
+	case "pod":
+		if rebootNS == "" {
+			return fmt.Errorf("--escalation-actuator=pod needs --reboot-namespace or $POD_NAMESPACE")
+		}
+		r.Actuator = controller.PodActuator{Client: mgr.GetClient(), Namespace: rebootNS, Image: rebootImage, Now: time.Now}
+	case "none":
+	default:
+		return fmt.Errorf("--escalation-actuator must be annotation, pod or none, got %q", actuatorName)
 	}
 	if err := r.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setup controller: %w", err)
