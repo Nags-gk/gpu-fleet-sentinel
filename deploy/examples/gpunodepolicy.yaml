@@ -21,3 +21,19 @@ spec:
     matchLabels: {pool: inference}
   dryRun: true                 # observe events and status before enforcing
   drainScope: all
+---
+# Automated repair: if a node is still unhealthy 15m after quarantine, ask for a
+# reboot (up to 2 times, 20m apart, one node at a time), then ask for a
+# replacement. See docs/ARCHITECTURE.md for the safety gates.
+apiVersion: gpu-sentinel.io/v1alpha1
+kind: GPUNodePolicy
+metadata:
+  name: training-h100-repair
+spec:
+  nodeSelector:
+    matchLabels: {pool: training-repair}
+  escalation:
+    after: 15m
+    maxAttempts: 2
+    cooldown: 20m
+    maxConcurrent: 1

@@ -70,6 +70,61 @@ type GPUNodePolicySpec struct {
 	// DryRun logs and emits events but never cordons, taints or evicts.
 	// +optional
 	DryRun *bool `json:"dryRun,omitempty"`
+
+	// Escalation, when set, repairs quarantined nodes that do not recover on
+	// their own: reboot them (which resets the GPU state a critical XID or ECC
+	// counter latches), then ask for a replacement once reboots are exhausted.
+	// Omit it to leave quarantined nodes for a human.
+	// +optional
+	Escalation *EscalationSpec `json:"escalation,omitempty"`
+}
+
+// EscalationAction is the first-line repair for a node that stays unhealthy.
+// +kubebuilder:validation:Enum=Reboot;RequestReplacement
+type EscalationAction string
+
+const (
+	// EscalateReboot tries reboots first, then requests a replacement.
+	EscalateReboot EscalationAction = "Reboot"
+	// EscalateReplacement skips reboots and only requests a replacement.
+	EscalateReplacement EscalationAction = "RequestReplacement"
+)
+
+// EscalationSpec bounds automated repair. Every reboot happens only on a node
+// that is already cordoned, tainted and fully drained through the Eviction API.
+type EscalationSpec struct {
+	// After is how long a node must stay quarantined (and unhealthy) before the
+	// first repair step.
+	// +kubebuilder:validation:XValidation:rule="duration(self) > duration('0s')",message="must be a positive duration such as 15m"
+	After metav1.Duration `json:"after"`
+
+	// Action is the first-line repair. Default Reboot.
+	// +optional
+	Action *EscalationAction `json:"action,omitempty"`
+
+	// MaxAttempts is how many reboots to try inside historyWindow before asking
+	// for a replacement. Default 2.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=5
+	// +optional
+	MaxAttempts *int32 `json:"maxAttempts,omitempty"`
+
+	// Cooldown is the minimum time between reboot attempts on one node; it must
+	// cover the node coming back and its agent reporting. Default 20m.
+	// +kubebuilder:validation:XValidation:rule="duration(self) > duration('0s')",message="must be a positive duration such as 20m"
+	// +optional
+	Cooldown *metav1.Duration `json:"cooldown,omitempty"`
+
+	// MaxConcurrent caps reboots in flight across this policy's nodes. Default 1.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	MaxConcurrent *int32 `json:"maxConcurrent,omitempty"`
+
+	// HistoryWindow: reboots older than this stop counting against maxAttempts,
+	// so a node that stays healthy for a day gets a fresh budget. Default 24h.
+	// +kubebuilder:validation:XValidation:rule="duration(self) > duration('0s')",message="must be a positive duration such as 24h"
+	// +optional
+	HistoryWindow *metav1.Duration `json:"historyWindow,omitempty"`
 }
 
 // GPUNodePolicyStatus summarizes the nodes a policy governs.
@@ -88,6 +143,10 @@ type GPUNodePolicyStatus struct {
 	QuarantinedNodes int32 `json:"quarantinedNodes"`
 	// Budget is the most nodes this policy allows to be quarantined at once.
 	Budget int32 `json:"budget"`
+	// RepairingNodes have a reboot in flight (attempted within the cooldown).
+	RepairingNodes int32 `json:"repairingNodes"`
+	// ReplacementRequestedNodes exhausted their reboots and await replacement.
+	ReplacementRequestedNodes int32 `json:"replacementRequestedNodes"`
 
 	// QuarantinedNodeNames lists up to 50 quarantined nodes.
 	// +kubebuilder:validation:MaxItems=50
@@ -111,6 +170,8 @@ type GPUNodePolicyStatus struct {
 // +kubebuilder:printcolumn:name="Unhealthy",type=integer,JSONPath=`.status.unhealthyNodes`
 // +kubebuilder:printcolumn:name="Quarantined",type=integer,JSONPath=`.status.quarantinedNodes`
 // +kubebuilder:printcolumn:name="Budget",type=integer,JSONPath=`.status.budget`
+// +kubebuilder:printcolumn:name="Repairing",type=integer,JSONPath=`.status.repairingNodes`
+// +kubebuilder:printcolumn:name="NeedReplacement",type=integer,JSONPath=`.status.replacementRequestedNodes`
 // +kubebuilder:printcolumn:name="DryRun",type=boolean,JSONPath=`.spec.dryRun`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`

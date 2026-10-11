@@ -40,6 +40,8 @@ spec:
             - --max-unavailable-percent={{ .Values.controller.maxUnavailablePercent }}
             - --drain-scope={{ .Values.controller.drainScope }}
             - --dry-run={{ .Values.controller.dryRun }}
+            - --escalation-actuator={{ .Values.controller.escalation.actuator }}
+            - --reboot-image={{ .Values.controller.escalation.rebootImage }}
             {{- if .Values.agent.leaseHeartbeat }}
             - --lease-namespace=$(POD_NAMESPACE)
             {{- else }}

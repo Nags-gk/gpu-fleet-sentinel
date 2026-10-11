@@ -72,6 +72,33 @@ training-h100   64        2           1             1        false    True    3d
 - `status` reports managed / healthy / unhealthy / quarantined counts, the budget, and `Ready` and `BudgetExhausted` conditions. More examples: [deploy/examples](deploy/examples/gpunodepolicy.yaml).
 - Without the CRD installed the controller runs from flags exactly as before.
 
+### Automated repair (opt-in)
+
+Most latched GPU faults (a critical XID, uncorrectable ECC) clear only when the GPU is
+reset, so a quarantined node stays out until someone reboots it. Add an `escalation`
+block to a policy to automate that, within hard limits:
+
+```yaml
+spec:
+  escalation: {after: 15m, maxAttempts: 2, cooldown: 20m, maxConcurrent: 1}
+```
+
+A node still unhealthy `after` quarantine is rebooted, up to `maxAttempts` times
+inside `historyWindow` (24h), `cooldown` apart and `maxConcurrent` at a time. Then it is
+flagged `gpu-sentinel.io/replacement-requested` and never touched again. Safety gates:
+reboots only happen on a node that is already cordoned and tainted, **fully drained
+through the Eviction API** (PDBs honored, CPU pods included, terminating pods waited out),
+and with a stale or unknown agent the controller does nothing. Attempts are recorded
+*before* acting and survive release, so neither a crash nor a flapping node can cause an
+unbounded reboot loop.
+
+*How* the reboot happens is pluggable. `controller.escalation.actuator=annotation`
+(default) only sets `gpu-sentinel.io/reboot-requested` on the node for your own
+automation (a reboot daemon, a Cluster API remediation) and needs no extra privileges.
+`pod` has the controller run a privileged `nsenter ... systemctl reboot` pod on the
+node; it requires a namespace that permits privileged pods and is off unless you choose it.
+Replacement is always a request, never an automatic node deletion.
+
 ## Safety properties (each covered by tests, including property tests over random fleets; see [docs/TESTING.md](docs/TESTING.md))
 
 - **Disruption budget**: at most `max(maxUnavailable, maxUnavailablePercent × fleet)` nodes quarantined at once. Reconciles run with one worker so two nodes can't race for the last slot.

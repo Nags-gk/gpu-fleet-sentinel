@@ -44,6 +44,17 @@ controller:
   maxUnavailablePercent: 10
   drainScope: gpu        # gpu | all
   dryRun: false
+  # How a GPUNodePolicy's `escalation` repairs a node that stays unhealthy.
+  # annotation (default): set gpu-sentinel.io/reboot-requested on the node for
+  #   your own automation to act on. No extra privileges.
+  # pod: the controller creates a privileged hostPID pod in this release's
+  #   namespace that runs `nsenter ... systemctl reboot` on the node. Needs a
+  #   namespace that permits privileged pods and gives the controller pod
+  #   create/delete rights there. Opt in deliberately.
+  # none: escalation disabled everywhere.
+  escalation:
+    actuator: annotation
+    rebootImage: busybox:1.37
   llm:
     # OpenAI-compatible endpoint for incident summaries. Empty = built-in template.
     # Ollama: http://ollama.ollama:11434/v1   Azure OpenAI: https://<resource>.openai.azure.com

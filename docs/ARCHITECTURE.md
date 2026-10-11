@@ -23,6 +23,9 @@ NVIDIA's Node Problem Detector could write the condition instead of the agent.
 |---|---|---|
 | Node **condition** as the agent-to-controller interface | Standard Kubernetes signal; visible in `kubectl describe node`; Node Problem Detector uses the same pattern | Less structured than a CRD with per-GPU status; detail lives in the message and in `/debug/report` |
 | `GPUNodePolicy` CRD for *configuration* only, with flags as the default policy | Per-pool grace, budget and dry-run without redeploying; status gives `kubectl` visibility; flag-only installs keep working | Policy precedence (first match by name) is one more thing to reason about; each node counts toward one policy so budgets cannot be double-spent |
+| Repair escalation behind an actuator interface; default actuator only annotates | A reboot is the right fix for latched faults but needs host privilege; keeping "when" (pure, tested) apart from "how" lets a cluster use its own mechanism and keeps the default install unprivileged | Out of the box nothing reboots; operators wire an actuator or opt into the privileged pod |
+| Record the repair attempt before acting | If the controller dies between the two, an attempt is lost instead of repeated, so reboots stay bounded | One fewer reboot than allowed in that rare case |
+| Repair history survives release, expires with `historyWindow` | A node that recovers and fails again cannot get a fresh set of reboots every time | A node healthy for a day gets a fresh budget |
 | Policy status written with `Update`, not a merge patch | A merge patch drops zero-valued counts, which the CRD requires; found only against a real apiserver | Conflicts retry on the next reconcile |
 | Agent never cordons | Least privilege: a compromised or buggy agent on one node can't drain the fleet | One extra hop through the controller |
 | Telemetry loss = `Unknown`, not `False` | An exporter crash is far more common than a GPU failure; draining on missing data turns a monitoring outage into a capacity outage | A truly dead node with a dead agent isn't caught by this system. The kubelet's `Ready` condition and cluster autoscaler cover that case |
@@ -47,6 +50,18 @@ NVIDIA's Node Problem Detector could write the condition instead of the agent.
 | PDB blocks eviction | Pod counted as blocked, node requeued in 30s, event + alert; other nodes are unaffected |
 | Human cordons a node first | Recorded in an annotation; release leaves the cordon in place |
 | Flapping GPU | Agent hysteresis plus the controller recovery period |
+
+### Repair safety gates
+
+| Gate | Enforced by |
+|---|---|
+| Only nodes already quarantined by us and still unhealthy | escalation runs inside the quarantine path |
+| Never act on stale or unknown agent data | the policy `Decide` runs first and returns `None` |
+| Wait `after` before the first step, `cooldown` between steps | `escalation.Spec.Decide` (property-tested) |
+| At most `maxAttempts` reboots per `historyWindow`, then one replacement request | `escalation.Spec.Decide`; simulated for 2,000 random specs |
+| At most `maxConcurrent` reboots in flight per policy | counted from node annotations |
+| No reboot while any workload pod remains or an eviction is PDB-blocked | all-pods drain, then a pod count that includes terminating pods |
+| Dry-run policies never repair | dry-run returns before the quarantine path |
 
 ## Not in scope (yet)
 

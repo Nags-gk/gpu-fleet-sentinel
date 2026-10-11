@@ -27,3 +27,15 @@ groups:
         annotations:
           summary: "GPU agent on {{ $labels.pod }} cannot read telemetry"
           runbook_url: https://github.com/Nags-gk/gpu-fleet-sentinel/blob/main/docs/RUNBOOK.md#gputelemetryunavailable
+      - alert: GPUNodeNeedsReplacement
+        expr: increase(sentinel_repair_actions_total{action="replacement_requested"}[15m]) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: A GPU node did not recover after automated reboots and needs to be replaced
+          runbook_url: https://github.com/Nags-gk/gpu-fleet-sentinel/blob/main/docs/RUNBOOK.md#gpunodeneedsreplacement
+      - alert: GPURepairActionFailing
+        expr: increase(sentinel_repair_actions_total{action="error"}[30m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: The repair actuator is failing to reboot or hand off nodes
+          runbook_url: https://github.com/Nags-gk/gpu-fleet-sentinel/blob/main/docs/RUNBOOK.md#gpurepairactionfailing

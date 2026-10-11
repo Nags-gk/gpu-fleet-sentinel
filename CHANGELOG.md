@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- Repair escalation: a `GPUNodePolicy.spec.escalation` block reboots quarantined nodes that stay unhealthy (bounded attempts, cooldown, concurrency cap, full PDB-respecting drain first), then flags them for replacement. Pluggable `RepairActuator`: `annotation` (default, unprivileged) or opt-in `pod` (privileged reboot pod). Alerts `GPUNodeNeedsReplacement` and `GPURepairActionFailing`; policy status gains `repairingNodes` and `replacementRequestedNodes`.
 - Property tests (policy invariants, fleet simulation against the disruption budget, debouncer, evaluator, reconciler over random multi-policy fleets) and fuzz targets (`make fuzz`, run in CI). See `docs/TESTING.md`.
 - `GPUNodePolicy` CRD (`gpu-sentinel.io/v1alpha1`): per-pool grace/recovery/stale periods, disruption budget, drain scope and dry-run, each with its own budget, plus status counts and conditions. CEL admission rejects empty selectors and invalid durations. Flags remain the default policy; installs without the CRD are unchanged. Helm: `crds/`, `policies:` value, RBAC. `make generate` rebuilds deepcopy and the CRD; CI fails if they drift.
 - Lease-based agent heartbeats: node condition is rewritten only on change or every `--condition-resync` (default 5m). Controller accepts either heartbeat. Helm: `agent.leaseHeartbeat` (default true), namespaced RBAC for the agent's Leases.
