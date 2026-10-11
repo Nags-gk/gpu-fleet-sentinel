@@ -14,7 +14,7 @@ import (
 const propertyCases = 20000
 
 func randPolicy(r *rand.Rand) Policy {
-	d := func(max time.Duration) time.Duration { return time.Duration(r.Int63n(int64(max))) }
+	d := func(limit time.Duration) time.Duration { return time.Duration(r.Int63n(int64(limit))) }
 	p := Policy{
 		GracePeriod:           d(5 * time.Minute),
 		RecoveryPeriod:        d(15 * time.Minute),
