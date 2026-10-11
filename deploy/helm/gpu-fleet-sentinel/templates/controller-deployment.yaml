@@ -40,6 +40,11 @@ spec:
             - --max-unavailable-percent={{ .Values.controller.maxUnavailablePercent }}
             - --drain-scope={{ .Values.controller.drainScope }}
             - --dry-run={{ .Values.controller.dryRun }}
+            {{- if .Values.agent.leaseHeartbeat }}
+            - --lease-namespace=$(POD_NAMESPACE)
+            {{- else }}
+            - --lease-namespace=
+            {{- end }}
             {{- with .Values.controller.llm }}
             {{- if .baseURL }}
             - --llm-base-url={{ .baseURL }}
@@ -49,6 +54,9 @@ spec:
             {{- end }}
             {{- end }}
             {{- end }}
+          env:
+            - name: POD_NAMESPACE
+              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
           {{- if .Values.controller.llm.apiKeySecret }}
           envFrom:
             - secretRef: {name: {{ .Values.controller.llm.apiKeySecret }}}

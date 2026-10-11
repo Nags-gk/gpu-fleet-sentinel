@@ -1,6 +1,9 @@
 # GPU Fleet Sentinel
 
 [![ci](https://github.com/Nags-gk/gpu-fleet-sentinel/actions/workflows/ci.yaml/badge.svg)](https://github.com/Nags-gk/gpu-fleet-sentinel/actions/workflows/ci.yaml)
+[![release](https://img.shields.io/github/v/release/Nags-gk/gpu-fleet-sentinel?sort=semver)](https://github.com/Nags-gk/gpu-fleet-sentinel/releases)
+[![Go Report Card](https://goreportcard.com/badge/github.com/Nags-gk/gpu-fleet-sentinel)](https://goreportcard.com/report/github.com/Nags-gk/gpu-fleet-sentinel)
+[![license](https://img.shields.io/github/license/Nags-gk/gpu-fleet-sentinel)](LICENSE)
 
 **Automated GPU node health detection and safe remediation for Kubernetes.**
 A Go node agent reads NVIDIA DCGM telemetry, detects hardware faults (XID errors,
@@ -41,7 +44,35 @@ flowchart LR
 | **Recover** | After the recovery period the controller removes only what it added. A node a human had already cordoned stays cordoned. |
 | **Observe** | Prometheus metrics, a Grafana dashboard, and alert rules with runbook links. |
 
-## Safety properties (each covered by tests)
+## Per-pool policy with `GPUNodePolicy`
+
+Controller flags (or Helm `controller.*`) set the fleet-wide default. For pools that
+need different behavior, create a cluster-scoped `GPUNodePolicy`; fields you leave out
+inherit the default:
+
+```yaml
+apiVersion: gpu-sentinel.io/v1alpha1
+kind: GPUNodePolicy
+metadata: {name: training-h100}
+spec:
+  nodeSelector: {matchLabels: {pool: training}}
+  gracePeriod: 1m
+  maxUnavailable: 1
+  dryRun: false
+```
+
+```console
+$ kubectl get gpunodepolicies
+NAME            MANAGED   UNHEALTHY   QUARANTINED   BUDGET   DRYRUN   READY   AGE
+training-h100   64        2           1             1        false    True    3d
+```
+
+- **Each policy has its own disruption budget.** A node counts toward the first matching policy (by name) and the flag default is last, so overlapping selectors cannot double-spend a budget.
+- **Unsafe specs are rejected at admission** by CEL rules in the CRD: an empty `nodeSelector` (it would match the control plane too), negative or malformed durations, percentages over 100. The controller re-validates, and a node under an invalid policy is left alone rather than handled with settings nobody asked for.
+- `status` reports managed / healthy / unhealthy / quarantined counts, the budget, and `Ready` and `BudgetExhausted` conditions. More examples: [deploy/examples](deploy/examples/gpunodepolicy.yaml).
+- Without the CRD installed the controller runs from flags exactly as before.
+
+## Safety properties (each covered by tests, including property tests over random fleets; see [docs/TESTING.md](docs/TESTING.md))
 
 - **Disruption budget**: at most `max(maxUnavailable, maxUnavailablePercent × fleet)` nodes quarantined at once. Reconciles run with one worker so two nodes can't race for the last slot.
 - **Stale or unknown health never triggers action**: a crashed agent or exporter is not evidence of a bad GPU.
@@ -59,6 +90,8 @@ Measured with the simulated GPU backend. No physical GPUs were involved, so thes
 | Unit tests (`go test -race`) | fake client | 81.7% statement coverage, race-clean |
 | Integration test | real kube-apiserver + etcd (envtest), 3 GPU nodes + 1 CPU node | fault → quarantine in ~2s with a 2s grace period; PDB-protected pod kept; budget held under concurrent failures; automatic release |
 | End-to-end test (CI) | kind, 4 workers, Helm install | XID 79 injected → node quarantined in **13 s** (10 s grace period) → GPU workload rescheduled on a healthy node at **14 s** → node released **23 s** after the fault cleared (20 s recovery period); disruption budget held with two nodes failing at once |
+
+| Scale benchmark | 1,000 kwok nodes + 1,000 real agents + real controller against a real kube-apiserver/etcd | Node status writes **66.7/s → 0** with Lease heartbeats; 150 simultaneous faults: budget held at exactly 100, controller adds under 1.8 s beyond the grace period. See [docs/SCALE.md](docs/SCALE.md) |
 
 ## Quick start (laptop, no GPU required)
 
@@ -93,6 +126,7 @@ Real GPUs on AKS: [docs/AKS.md](docs/AKS.md).
 ```bash
 make test              # unit tests with the race detector
 make test-integration  # controller + agents against a real kube-apiserver (envtest)
+make fuzz              # fuzz the DCGM parser, rule engine and LLM decoder
 make lint              # golangci-lint
 ```
 
@@ -120,6 +154,22 @@ with exactly one request.
 
 **Pending pods bypass PDBs.** The Eviction API ignores PDBs for pods that are not
 running. The integration test sets pod phase explicitly to exercise the real path.
+
+**A critical XID keeps the node quarantined until the GPU is reset.** dcgm-exporter
+keeps reporting the last XID (and volatile ECC counters) until a GPU reset or reboot,
+so a node with a hardware fault is not released until someone repairs it. That is
+intentional. XID 63 (a *successful* row remap) is only a warning, because treating
+it as a fault would drain a node whose memory just repaired itself; XID 64 (remap
+failure) is critical. A restarted agent resumes from the condition already on the
+node rather than briefly reporting healthy and resetting the grace timer.
+
+**Heartbeats go through Leases, not the Node object.** Patching every node's status
+every 15 s made 1,000 agents issue ~67 Node writes/s, each one a watch event for every
+Node watcher in the cluster. Agents now renew a tiny Lease and rewrite the condition only
+when it changes (or every 5 min, which also repairs a deleted condition). The controller
+treats a node as live if either heartbeat is fresh, so older agents keep working, and the
+agent falls back to condition heartbeats if it cannot write its Lease. Set
+`agent.leaseHeartbeat=false` for the old behavior.
 
 **Condition timestamps have 1-second resolution**, so a grace period can fire up
 to ~1s early. That is irrelevant at the default 2-minute grace period, and is

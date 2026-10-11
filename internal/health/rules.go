@@ -7,14 +7,15 @@ import (
 )
 
 // XID codes the agent treats as hardware faults that warrant draining the
-// node. Codes not listed here (e.g. 13, 31, 43, 45) are usually caused by the
+// node. dcgm-exporter reports the last XID until the GPU is reset or the node
+// reboots, so a critical XID keeps the node quarantined until that reset; that
+// is intended, since a faulted GPU should not return to service unrepaired. Codes not listed here (e.g. 13, 31, 43, 45) are usually caused by the
 // application rather than the hardware and are reported as warnings.
 // Reference: NVIDIA "XID Errors" documentation.
 var criticalXIDs = map[int]string{
 	48:  "double-bit ECC error",
 	61:  "internal micro-controller breakpoint/warning",
 	62:  "internal micro-controller halt",
-	63:  "ECC page retirement or row remapping recording event",
 	64:  "ECC page retirement or row remapper recording failure",
 	74:  "NVLink error",
 	79:  "GPU has fallen off the bus",
@@ -23,6 +24,13 @@ var criticalXIDs = map[int]string{
 	95:  "uncontained ECC error",
 	119: "GSP RPC timeout",
 	120: "GSP error",
+}
+
+// XIDs that report a successful self-heal rather than a fault. XID 63 means a
+// row remap or page retirement was recorded; the failure case is XID 64. Treating
+// 63 as critical would drain a node whose memory just repaired itself.
+var infoXIDs = map[int]string{
+	63: "row remap/page retirement recorded; reset the GPU to apply",
 }
 
 // Thresholds configures the rule engine. Zero values are replaced by defaults.
@@ -125,6 +133,8 @@ func (e *Evaluator) Evaluate(snap Snapshot) Report {
 		if s.LastXID != 0 {
 			if desc, ok := criticalXIDs[s.LastXID]; ok {
 				add("xid", SeverityCritical, "XID %d (%s)", s.LastXID, desc)
+			} else if desc, ok := infoXIDs[s.LastXID]; ok {
+				add("xid", SeverityWarning, "XID %d (%s)", s.LastXID, desc)
 			} else {
 				add("xid", SeverityWarning, "XID %d (likely application-level)", s.LastXID)
 			}
@@ -162,6 +172,15 @@ type Debouncer struct {
 	badRun  int
 	goodRun int
 	started bool
+}
+
+// Seed sets the starting state before the first Observe, so a restarted agent
+// resumes from the condition already published instead of briefly reporting
+// healthy. It has no effect once Observe has been called.
+func (d *Debouncer) Seed(healthy bool) {
+	if !d.started {
+		d.started, d.healthy = true, healthy
+	}
 }
 
 // Observe records one report status and returns the debounced health.

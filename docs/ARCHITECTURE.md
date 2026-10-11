@@ -21,7 +21,9 @@ NVIDIA's Node Problem Detector could write the condition instead of the agent.
 
 | Decision | Why | Trade-off |
 |---|---|---|
-| Node **condition** as the interface, not a CRD | Standard Kubernetes signal; visible in `kubectl describe node`; Node Problem Detector uses the same pattern | Less structured than a CRD with per-GPU status; detail lives in the message and in `/debug/report` |
+| Node **condition** as the agent-to-controller interface | Standard Kubernetes signal; visible in `kubectl describe node`; Node Problem Detector uses the same pattern | Less structured than a CRD with per-GPU status; detail lives in the message and in `/debug/report` |
+| `GPUNodePolicy` CRD for *configuration* only, with flags as the default policy | Per-pool grace, budget and dry-run without redeploying; status gives `kubectl` visibility; flag-only installs keep working | Policy precedence (first match by name) is one more thing to reason about; each node counts toward one policy so budgets cannot be double-spent |
+| Policy status written with `Update`, not a merge patch | A merge patch drops zero-valued counts, which the CRD requires; found only against a real apiserver | Conflicts retry on the next reconcile |
 | Agent never cordons | Least privilege: a compromised or buggy agent on one node can't drain the fleet | One extra hop through the controller |
 | Telemetry loss = `Unknown`, not `False` | An exporter crash is far more common than a GPU failure; draining on missing data turns a monitoring outage into a capacity outage | A truly dead node with a dead agent isn't caught by this system. The kubelet's `Ready` condition and cluster autoscaler cover that case |
 | Debounce in the agent, grace period in the controller | Debounce filters sensor noise close to the source; the grace period is a fleet-operator policy knob | Two timers to tune |

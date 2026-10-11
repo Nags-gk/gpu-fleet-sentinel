@@ -28,6 +28,8 @@ func TestEvaluateRules(t *testing.T) {
 		{"dbe", GPUSample{Index: 0, TempC: 60, ECCDoubleBit: 2}, "ecc-dbe", SeverityCritical},
 		{"row remap", GPUSample{Index: 0, TempC: 60, RowRemapFailure: true}, "row-remap-failure", SeverityCritical},
 		{"xid 79 critical", GPUSample{Index: 0, TempC: 60, LastXID: 79}, "xid", SeverityCritical},
+		{"xid 63 remap recorded is not a fault", GPUSample{Index: 0, TempC: 60, LastXID: 63}, "xid", SeverityWarning},
+		{"xid 64 remap failure", GPUSample{Index: 0, TempC: 60, LastXID: 64}, "xid", SeverityCritical},
 		{"xid 13 app-level", GPUSample{Index: 0, TempC: 60, LastXID: 13}, "xid", SeverityWarning},
 	}
 	for _, tc := range tests {
@@ -204,5 +206,43 @@ func TestParseDCGM(t *testing.T) {
 func TestParseDCGMRejectsGarbage(t *testing.T) {
 	if _, err := ParseDCGM(strings.NewReader("not { valid")); err == nil {
 		t.Fatal("expected parse error")
+	}
+}
+
+func TestDebouncerSeed(t *testing.T) {
+	d := Debouncer{FailAfter: 2, RecoverAfter: 2}
+	d.Seed(false)
+	if d.Observe(SeverityCritical) {
+		t.Fatal("seeded-unhealthy debouncer must not report healthy on a critical sample")
+	}
+	if d.Observe(SeverityOK) {
+		t.Fatal("one good sample is not enough to recover")
+	}
+	if !d.Observe(SeverityOK) {
+		t.Fatal("two good samples should recover")
+	}
+	d.Seed(false) // ignored once started
+	if !d.Observe(SeverityOK) {
+		t.Fatal("Seed after Observe must be a no-op")
+	}
+}
+
+// Readings the rules cannot reason about fail the scrape (-> condition Unknown)
+// instead of silently reading as healthy.
+func TestParseDCGMRejectsUnusableValues(t *testing.T) {
+	for name, in := range map[string]string{
+		"nan temperature":  `DCGM_FI_DEV_GPU_TEMP{gpu="0"} NaN`,
+		"inf power":        `DCGM_FI_DEV_POWER_USAGE{gpu="0"} +Inf`,
+		"negative counter": `DCGM_FI_DEV_ECC_DBE_VOL_TOTAL{gpu="0"} -1`,
+		"huge counter":     `DCGM_FI_DEV_ECC_SBE_VOL_TOTAL{gpu="0"} 1e30`,
+		"bad xid":          `DCGM_FI_DEV_XID_ERRORS{gpu="0"} 70000`,
+	} {
+		if _, err := ParseDCGM(strings.NewReader(in + "\n")); err == nil {
+			t.Errorf("%s: expected an error", name)
+		}
+	}
+	// Metrics we do not consume may carry anything.
+	if _, err := ParseDCGM(strings.NewReader("DCGM_FI_DEV_FB_USED{gpu=\"0\"} NaN\n")); err != nil {
+		t.Errorf("unrelated NaN metric should be ignored: %v", err)
 	}
 }

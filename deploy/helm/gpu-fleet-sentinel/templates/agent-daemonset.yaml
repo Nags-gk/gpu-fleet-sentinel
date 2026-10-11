@@ -40,9 +40,17 @@ spec:
             - --sim-gpus={{ .Values.agent.sim.gpus }}
             - --sim-model={{ .Values.agent.sim.model }}
             - --listen=:{{ .Values.agent.port }}
+            {{- if .Values.agent.leaseHeartbeat }}
+            - --lease-namespace=$(POD_NAMESPACE)
+            - --condition-resync={{ .Values.agent.conditionResync }}
+            {{- else }}
+            - --lease-namespace=
+            {{- end }}
           env:
             - name: NODE_NAME
               valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
+            - name: POD_NAMESPACE
+              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
             - name: HOST_IP
               valueFrom: {fieldRef: {fieldPath: status.hostIP}}
           ports:

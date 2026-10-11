@@ -16,6 +16,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with: {go-version-file: go.mod}
+      - name: generated code and CRD are up to date
+        run: make generate && git diff --exit-code -- api deploy/helm
       - name: gofmt
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - name: vet
@@ -26,6 +28,15 @@ jobs:
         run: go test -race -coverprofile=cover.out ./...
       - name: coverage
         run: go tool cover -func=cover.out | tail -1
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version-file: go.mod}
+      - name: fuzz parsers and decoders (20s each)
+        run: make fuzz FUZZTIME=20s
 
   integration:
     runs-on: ubuntu-latest
@@ -44,6 +55,7 @@ jobs:
       - run: helm lint deploy/helm/gpu-fleet-sentinel
       - run: |
           helm template t deploy/helm/gpu-fleet-sentinel \
+            --set 'policies[0].name=p' --set 'policies[0].spec.nodeSelector.matchLabels.pool=a' \
             --set serviceMonitor.enabled=true --set prometheusRule.enabled=true \
             --set controller.llm.baseURL=http://ollama:11434/v1 > /dev/null
 
@@ -74,7 +86,12 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [e2e]
     runs-on: ubuntu-latest
-    permissions: {contents: read, packages: write}
+    permissions:
+      contents: write   # create the GitHub release
+      packages: write   # push to GHCR
+      id-token: write   # keyless cosign signing
+    env:
+      IMAGE: ghcr.io/nags-gk/gpu-fleet-sentinel
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
@@ -84,9 +101,31 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
       - uses: docker/build-push-action@v6
+        id: build
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ghcr.io/nags-gk/gpu-fleet-sentinel:${{ github.ref_name }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          sbom: true        # SPDX SBOM attached to the image
+          provenance: mode=max
+      - uses: sigstore/cosign-installer@v3
+      - name: sign image (keyless)
+        run: cosign sign --yes ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+      - name: package chart
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          helm package deploy/helm/gpu-fleet-sentinel --version "$v" --app-version "$v"
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$GITHUB_REF_NAME" --generate-notes ./*.tgz

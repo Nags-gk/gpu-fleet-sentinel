@@ -99,6 +99,11 @@ func (p Policy) Budget(total int) int {
 	return max(p.MaxUnavailable, pct)
 }
 
+// since is the time elapsed since t, never negative. The transition time is
+// written with the node's clock, so skew can place it in the future; without
+// the clamp a timer would wait longer than its configured period.
+func since(now, t time.Time) time.Duration { return max(now.Sub(t), 0) }
+
 // Decide is the single source of truth for remediation behavior.
 func (p Policy) Decide(n NodeView, f FleetView, now time.Time) Decision {
 	if p.StaleAfter > 0 && !n.Heartbeat.IsZero() && now.Sub(n.Heartbeat) > p.StaleAfter {
@@ -111,7 +116,7 @@ func (p Policy) Decide(n NodeView, f FleetView, now time.Time) Decision {
 		if n.QuarantinedByUs {
 			return Decision{Action: ActionQuarantine, Reason: "already quarantined; ensuring drain is complete"}
 		}
-		if elapsed := now.Sub(n.Since); elapsed < p.GracePeriod {
+		if elapsed := since(now, n.Since); elapsed < p.GracePeriod {
 			return Decision{Action: ActionWait, RequeueAfter: p.GracePeriod - elapsed,
 				Reason: fmt.Sprintf("unhealthy for %s, grace period %s", elapsed.Round(time.Second), p.GracePeriod)}
 		}
@@ -125,7 +130,7 @@ func (p Policy) Decide(n NodeView, f FleetView, now time.Time) Decision {
 		if !n.QuarantinedByUs {
 			return Decision{Action: ActionNone, Reason: "healthy"}
 		}
-		if elapsed := now.Sub(n.Since); elapsed < p.RecoveryPeriod {
+		if elapsed := since(now, n.Since); elapsed < p.RecoveryPeriod {
 			return Decision{Action: ActionWait, RequeueAfter: p.RecoveryPeriod - elapsed,
 				Reason: fmt.Sprintf("healthy for %s, recovery period %s", elapsed.Round(time.Second), p.RecoveryPeriod)}
 		}

@@ -1,0 +1,50 @@
+{
+  "mode": "legacy",
+  "nodes": 1000,
+  "interval": "15s",
+  "steady_state": {
+    "seconds": 120.000422792,
+    "requests_per_sec": {
+      "GET nodes": 66.67,
+      "GET other": 0,
+      "PATCH nodes/status": 66.67
+    },
+    "total_requests_per_sec": 133.33,
+    "node_writes_per_sec": 66.67,
+    "process_cpu_cores": {
+      "apiserver": 0.01,
+      "controller": 0.02,
+      "etcd": 0
+    },
+    "process_rss_mib": {
+      "apiserver": 193.2,
+      "controller": 69.94,
+      "etcd": 46.69
+    }
+  },
+  "fault": {
+    "injected": 150,
+    "quarantined": 100,
+    "deferred_by_budget": 50,
+    "peak_concurrent_quarantined": 100,
+    "budget": 100,
+    "inject_to_condition_false_p50_s": 18.74,
+    "inject_to_condition_false_p95_s": 23.74,
+    "condition_false_to_quarantine_p50_s": 10.79,
+    "condition_false_to_quarantine_p95_s": 10.87,
+    "condition_false_to_quarantine_max_s": 11.81,
+    "gpu_pods_evicted": 100,
+    "clear_to_all_released_s": 49.84,
+    "budget_never_exceeded": true
+  },
+  "controller_metrics": {
+    "decisions_defer": 150,
+    "decisions_none": 2234,
+    "decisions_quarantine": 300,
+    "decisions_release": 100,
+    "decisions_wait": 250,
+    "quarantined_nodes_now": 0,
+    "reconcile_count": 3034,
+    "reconcile_mean_ms": 3.91
+  }
+}
