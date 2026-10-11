@@ -41,7 +41,7 @@ func TestDecide(t *testing.T) {
 }
 
 func randSpec(r *rand.Rand) Spec {
-	d := func(max time.Duration) time.Duration { return time.Second + time.Duration(r.Int63n(int64(max))) }
+	d := func(limit time.Duration) time.Duration { return time.Second + time.Duration(r.Int63n(int64(limit))) }
 	return Spec{
 		After: d(30 * time.Minute), Replace: r.Intn(5) == 0, MaxAttempts: 1 + r.Intn(4),
 		Cooldown: d(40 * time.Minute), MaxConcurrent: 1 + r.Intn(3),
