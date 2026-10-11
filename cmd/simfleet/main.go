@@ -523,7 +523,13 @@ func parseCPU(s string) float64 {
 
 // scrapeController pulls the series worth reporting from the controller.
 func scrapeController(url string) map[string]float64 {
-	resp, err := http.Get(url)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil
 	}
